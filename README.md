@@ -1,165 +1,88 @@
-# 🌉 Remote Bridge System v3.2
+# 🌉 Remote Bridge System v4.5 (Pentest Edition)
 
-A lightweight, stable system for remote command execution over HTTP. Perfect for remote development, debugging, file transfer, and automation.
+A lightweight, stable system for remote command execution over HTTP. Perfect for remote development, debugging, file transfer, and **autonomous AI pentesting**.
 
-## ✨ Features
+## 🛡️ Pentest Edition Features
 
-- **Stable & Reliable** - Auto-retry on connection failures
-- **Compression** - Gzip compression for large outputs
-- **File Transfer** - Chunked upload/download with progress bars
-- **Authentication** - Optional API key protection
-- **Interactive REPL** - Command history and built-in commands
-- **Cross-Platform** - Works on Linux, Windows (WSL), macOS
-- **Beautiful Colors** - Colored output for better readability
-- **Full Logging** - Complete command logging with timestamps
+This version is specifically enhanced for Autonomous AI Agents (like z.ai) to perform Bug Bounty and Penetration Testing via a Cloudflare Tunnel:
+- **Smart Actions**: `scan_nuclei`, `enum_subdomains`, `fuzz_dir` output clean, structured JSON to save AI context tokens.
+- **Background Processes**: Never hit cloud AI timeouts on long scans (`nmap`, `ffuf`) using the `bg` and `poll` mechanics.
+- **Environment Automation**: Included `setup_pentest_env.sh` script to automatically download Go, Nuclei, Subfinder, Ffuf, Nmap, and SecLists.
+- **File Transfer**: Chunked upload/download with progress bars.
+- **Authentication**: Optional API key protection.
 
-## 🚀 Quick Start
+---
 
-### Step 1: Start the Agent
+## 🚀 Quick Start for Bug Hunters
 
+### Step 1: Install Offensive Tools
+Run the setup script on your local machine (Kali/WSL) to install the necessary ProjectDiscovery tools and wordlists:
 ```bash
-# Basic usage
-python3 bridge_agent.py
-
-# With authentication
-python3 bridge_agent.py --api-key your-secret-key
-
-# Custom port
-python3 bridge_agent.py --port 9000
+sudo ./setup_pentest_env.sh
 ```
 
-### Step 2: Expose via Tunnel
-
+### Step 2: Start the Agent & Tunnel
 ```bash
-cloudflared tunnel --url http://localhost:8765
+# Easiest way (starts agent + cloudflared tunnel automatically)
+python3 launch.py
+
+# With authentication
+python3 launch.py --api-key your-secret-key
 ```
 
 Output:
 ```
-Your quick Tunnel has been created! Visit it at:
-https://xxxx-xxxx-xxxx-xxxx.trycloudflare.com
+  TUNNEL READY
+  URL:  https://xxxx-xxxx-xxxx-xxxx.trycloudflare.com
 ```
 
-### Step 3: Control Remotely
+### Step 3: Give to AI
+Copy the contents of `AI_SYSTEM_PROMPT.md` and paste it into your AI Agent's system instructions. Give it the Cloudflare tunnel URL and let it hunt!
 
-```bash
-# Health check
-python3 bridge_controller.py -u https://xxx.trycloudflare.com --cmd "echo hello"
+---
 
-# Interactive mode
-python3 bridge_controller.py -u https://xxx.trycloudflare.com -i
+## 🤖 Smart AI Pentest Endpoints
 
-# Upload file
-python3 bridge_controller.py -u https://xxx.trycloudflare.com --upload myfile.zip
+The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON payloads to execute commands.
 
-# Download file
-python3 bridge_controller.py -u https://xxx.trycloudflare.com --download /remote/file.txt
-```
-
-## 📖 Command Reference
-
-### Bridge Agent
-
-```bash
-python3 bridge_agent.py [OPTIONS]
-
-Options:
-  -p, --port PORT      Port to listen on (default: 8765)
-  -k, --api-key KEY    Enable API key authentication
-```
-
-Environment variables:
-- `BRIDGE_API_KEY` - Alternative way to set API key
-
-### Bridge Controller
-
-```bash
-python3 bridge_controller.py -u URL [OPTIONS]
-
-Options:
-  -u, --url URL         Bridge URL (required)
-  -c, --cmd COMMAND     Execute single command
-  -i, --interactive     Interactive REPL mode
-  -k, --api-key KEY     API key for authentication
-  -t, --timeout SEC     Command timeout (default: 60)
-  --upload FILE         Upload file to remote
-  --download FILE       Download file from remote
-  --remote-path PATH    Remote path for upload/download
-  -f, --file FILE       Execute commands from file
-```
-
-### Interactive Mode Commands
-
-| Command | Description |
-|---------|-------------|
-| `!health` | Check bridge status |
-| `!upload <local> [remote]` | Upload file |
-| `!download <remote> [local]` | Download file |
-| `!history` | Show command history |
-| `!exit` | Exit interactive mode |
-
-## 📦 File Transfer
-
-### Upload
-
-```bash
-# Command line
-python3 bridge_controller.py -u $URL --upload local.zip --remote-path /remote/dest.zip
-
-# Interactive mode
-bridge> !upload local.zip /remote/dest.zip
-```
-
-### Download
-
-```bash
-# Command line
-python3 bridge_controller.py -u $URL --download /remote/file.txt --remote-path local.txt
-
-# Interactive mode  
-bridge> !download /remote/file.txt local.txt
-```
-
-## 🔐 Security
-
-### Enable Authentication
-
-**Agent side:**
-```bash
-python3 bridge_agent.py --api-key my-secret-key-123
-# or
-BRIDGE_API_KEY=my-secret-key-123 python3 bridge_agent.py
-```
-
-**Controller side:**
-```bash
-python3 bridge_controller.py -u $URL -k my-secret-key-123 -i
-```
-
-### Security Tips
-
-1. **Always use HTTPS** - Cloudflared provides this automatically
-2. **Use strong API keys** - At least 32 random characters
-3. **Close tunnel when done** - Stop cloudflared when not in use
-4. **Monitor logs** - Check agent console for executed commands
-
-## 📡 API Reference
-
-### GET / - Health Check
-
-Response:
+### `pentest_env` - Check Available Tools
 ```json
 {
-  "status": "online",
-  "version": "3.0",
-  "timestamp": 1234567890.123,
-  "auth_enabled": false
+  "action": "pentest_env"
 }
 ```
 
-### POST / - Actions
+### `enum_subdomains` - Subdomain Discovery (Subfinder)
+```json
+{
+  "action": "enum_subdomains",
+  "domain": "example.com"
+}
+```
 
-#### Execute Command
+### `fuzz_dir` - Fuzzing (Ffuf)
+```json
+{
+  "action": "fuzz_dir",
+  "target": "https://example.com/FUZZ",
+  "wordlist": "/home/user/wordlists/custom_fuzz.txt"
+}
+```
+
+### `scan_nuclei` - Vulnerability Scan
+```json
+{
+  "action": "scan_nuclei",
+  "target": "https://example.com",
+  "severity": "critical,high"
+}
+```
+
+---
+
+## 📖 Standard Command Reference
+
+### Synchronous Execution
 ```json
 {
   "action": "exec",
@@ -168,77 +91,40 @@ Response:
 }
 ```
 
-Response:
+### Background Execution (for long tasks like Nmap)
 ```json
 {
-  "stdout": "total 0\n...",
-  "stderr": "",
-  "returncode": 0
+  "action": "bg",
+  "command": "nmap -p- -T4 target.com > scan.txt"
 }
 ```
+*(Returns a `pid`)*
 
-#### Upload File
 ```json
 {
-  "action": "upload",
-  "filename": "/path/to/file",
-  "data": "base64-encoded-content",
-  "mode": "write"
+  "action": "poll",
+  "pid": "1234"
 }
 ```
-
-#### Download File
-```json
-{
-  "action": "download",
-  "filename": "/path/to/file",
-  "offset": 0,
-  "chunk_size": 524288
-}
-```
-
-## 🔧 Use Cases
-
-- **Remote Debugging** - Execute commands on remote machines
-- **File Synchronization** - Transfer files between machines
-- **CI/CD Integration** - Trigger remote builds/deployments
-- **IoT Management** - Control devices behind NAT
-- **Bug Bounty** - Test from different network perspectives
-
-## 📋 Requirements
-
-- Python 3.7+
-- `requests` library (controller only)
-
-```bash
-pip install requests
-```
-
-## 🛠 Troubleshooting
-
-### Connection Failed
-- Check if bridge agent is running
-- Verify tunnel URL is correct
-- Try restarting cloudflared tunnel
-
-### Timeout Errors
-- Increase timeout with `-t` flag
-- Check if command produces large output
-
-### Authentication Error
-- Verify API key matches on both sides
-- Check Authorization header is being sent
-
-### Port Already in Use
-```bash
-# Use different port
-python3 bridge_agent.py --port 9000
-```
-
-## 📄 License
-
-MIT License
 
 ---
 
-Made with ❤️ for developers
+## 🔐 Security
+
+### Enable Authentication
+
+**Agent side:**
+```bash
+python3 launch.py --api-key my-secret-key-123
+```
+
+**Controller side / AI Agent:**
+Include the header: `Authorization: Bearer my-secret-key-123`
+
+### Security Tips
+1. **Never share your tunnel URL publicly** while the agent is running.
+2. **Use strong API keys**.
+3. **Monitor logs** - Check agent console for executed commands.
+
+## 📄 License
+MIT License

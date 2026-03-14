@@ -40,7 +40,7 @@ def log(tag, msg, color=W):
     print(f"  {DIM}[{ts}]{RESET} {color}{tag:<6}{RESET} {msg}")
 
 def banner():
-    print(f"\n  {C}{BOLD}BRIDGE LAUNCHER{RESET} {DIM}v1.0{RESET}")
+    print(f"\n  {C}{BOLD}BRIDGE LAUNCHER{RESET} {DIM}v1.1 (Pentest Edition){RESET}")
     print(f"  {DIM}{'=' * 44}{RESET}\n")
 
 def cleanup(sig=None, frame=None):
@@ -251,6 +251,7 @@ def main():
             print(f"  {DIM}{'=' * 44}{RESET}\n")
             print(f"  Give this to your AI agent:")
             print(f"  {Y}curl -s {tunnel_url}/{RESET}\n")
+            print(f"  {DIM}Run ./setup_pentest_env.sh to install offensive tools first!{RESET}")
         else:
             log("WARN ", "Could not establish tunnel. Bridge is still running locally.", Y)
             print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{args.port}{RESET}\n")
