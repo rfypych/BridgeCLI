@@ -1,0 +1,5 @@
+# Dirsearch started Wed Mar 11 02:08:32 2026 as: /usr/lib/python3/dist-packages/dirsearch/dirsearch.py -u https://extend-api.dailypay.com --quiet -e json,html,php,asp,aspx -t 10 --timeout=10 -x 404,403
+
+200    18B   https://extend-api.dailypay.com/ping
+201    20B   https://extend-api.dailypay.com/status
+201    20B   https://extend-api.dailypay.com/status?full=true
