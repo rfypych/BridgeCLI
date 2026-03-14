@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Bridge Agent v4.0 - Stable, Efficient & AI-Friendly
+Bridge Agent v4.5 (Pentest Edition) - Stable, Efficient & AI-Friendly
 Run this on the target machine (e.g., WSL, remote server, Windows)
 
 Features:
@@ -194,7 +194,7 @@ def print_banner(port: int, auth_enabled: bool):
     ip = get_local_ip()
     auth_s = Color.color("ENABLED", Color.BRIGHT_GREEN) if auth_enabled else Color.color("DISABLED", Color.BRIGHT_RED)
     div = Color.dim('=' * 42)
-    print(f"\n  {Color.BRIGHT_CYAN}{Color.BOLD}BRIDGE AGENT{Color.RESET} {Color.dim('v4.0')}")
+    print(f"\n  {Color.BRIGHT_CYAN}{Color.BOLD}BRIDGE AGENT{Color.RESET} {Color.dim('v4.5')}")
     print(f"  {div}")
     print(f"  {Color.bold('Status:')}    {Color.badge('ONLINE', Color.BG_GREEN + Color.BLACK)}")
     print(f"  {Color.bold('Address:')}   {Color.BRIGHT_YELLOW}http://{ip}:{port}{Color.RESET}")
@@ -320,7 +320,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             # Return JSON for curl/API clients
             print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.SUCCESS}GET{Color.RESET}  {Color.dim('/ - Health Check (JSON)')}")
             self.send_json(200, {
-                "type": "remote-terminal-bridge",
+                "type": "pentest-bridge",
                 "status": "online",
                 "version": "4.0",
                 "timestamp": time.time(),
@@ -335,6 +335,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 "capabilities": [
                     "exec", "bg", "poll",
                     "list", "stat", "read", "write", "mkdir", "delete", "move",
+                    "pentest_env", "scan_nuclei", "enum_subdomains", "fuzz_dir",
                     "upload", "download", "stats"
                 ],
                 "usage": {
@@ -350,7 +351,11 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     "move":  {"body": {"action": "move", "src": "<path>", "dst": "<path>"}, "description": "Move or rename file/directory."},
                     "upload":   {"body": {"action": "upload", "filename": "<path>", "data": "<base64>", "mode": "write|append"}, "description": "Upload binary file via base64."},
                     "download": {"body": {"action": "download", "filename": "<path>", "offset": 0, "chunk_size": 1048576}, "description": "Download file as base64 (chunked)."},
-                    "stats": {"body": {"action": "stats"}, "description": "Get server stats: uptime, request count, bytes transferred."}
+                    "stats": {"body": {"action": "stats"}, "description": "Get server stats: uptime, request count, bytes transferred."},
+                    "pentest_env": {"body": {"action": "pentest_env"}, "description": "Check available pentest tools and paths."},
+                    "scan_nuclei": {"body": {"action": "scan_nuclei", "target": "https://...", "templates": "(opt)", "severity": "(opt)"}, "description": "Run nuclei scan and return JSON array."},
+                    "enum_subdomains": {"body": {"action": "enum_subdomains", "domain": "example.com"}, "description": "Run subfinder and return JSON array of subdomains."},
+                    "fuzz_dir": {"body": {"action": "fuzz_dir", "target": "http://.../FUZZ", "wordlist": "(opt)"}, "description": "Run ffuf and return valid endpoints as JSON array."}
                 },
                 "hint": "POST to / with JSON body to run commands or manage files on the host machine."
             })
@@ -368,7 +373,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Bridge Agent v4.0</title>
+<title>Bridge Agent v4.5 (Pentest Edition)</title>
 <style>
   body {{ font-family: monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 2rem; }}
   h1 {{ color: #58a6ff; margin-bottom: 0; }}
@@ -389,7 +394,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 </style>
 </head>
 <body>
-<h1>&#127757; Bridge Agent <span style="color:#3fb950">v4.0</span></h1>
+<h1>&#127757; Bridge Agent <span style="color:#3fb950">v4.5</span></h1>
 <p class="sub">Remote Terminal Bridge &bull; <span class="badge">ONLINE</span></p>
 
 <div class="card">
@@ -485,6 +490,10 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
 
             dispatch = {
                 "exec":     self._handle_exec,
+                "pentest_env":     self._handle_pentest_env,
+                "scan_nuclei":     self._handle_scan_nuclei,
+                "enum_subdomains": self._handle_enum_subdomains,
+                "fuzz_dir":        self._handle_fuzz_dir,
                 "bg":       self._handle_bg,
                 "poll":     self._handle_poll,
                 "list":     self._handle_list,
@@ -802,6 +811,144 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}STAT{Color.RESET} {Color.dim('server stats requested')}")
         self.send_json(200, snap)
 
+
+    # ---------- PENTEST ENVIRONMENT ----------
+    def _handle_pentest_env(self, data):
+        tools = ['nuclei', 'ffuf', 'subfinder', 'httpx', 'katana', 'nmap', 'sqlmap', 'go', 'jq']
+        available = {}
+        for t in tools:
+            r = subprocess.run(f"which {t}", shell=True, capture_output=True, text=True)
+            available[t] = r.stdout.strip() if r.returncode == 0 else None
+
+        home = os.path.expanduser("~")
+        env_info = {
+            "tools": available,
+            "wordlists_path": f"{home}/wordlists",
+            "nuclei_templates_path": f"{home}/nuclei-templates",
+            "go_path": f"{home}/go/bin"
+        }
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}PENT{Color.RESET} {Color.dim('pentest env checked')}")
+        self.send_json(200, env_info)
+
+    # ---------- SCAN NUCLEI ----------
+    def _handle_scan_nuclei(self, data):
+        target = data.get("target")
+        if not target:
+            self.send_json(400, {"error": "No target specified"}); return
+
+        templates = data.get("templates", "")
+        severity = data.get("severity", "")
+
+        cmd = f"nuclei -u {target} -silent -jsonl"
+        if templates:
+            cmd += f" -t {templates}"
+        if severity:
+            cmd += f" -severity {severity}"
+
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}NUCL{Color.RESET} {Color.bold(target)}")
+
+        try:
+            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
+            if result.get("returncode", -1) != 0 and not result.get("stdout"):
+                self.send_json(500, {"error": result.get("stderr", "Unknown error")}); return
+
+            # Parse JSONL output to array of objects
+            parsed = []
+            for line in result.get("stdout", "").strip().split("\n"):
+                if line.strip():
+                    try:
+                        parsed.append(json.loads(line))
+                    except:
+                        pass
+
+            Stats.inc(commands_run=1)
+            self.send_json(200, {
+                "target": target,
+                "vulnerabilities": parsed,
+                "count": len(parsed),
+                "raw_stderr": result.get("stderr")
+            }, compress=True)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    # ---------- ENUMERATION SUBDOMAINS ----------
+    def _handle_enum_subdomains(self, data):
+        domain = data.get("domain")
+        if not domain:
+            self.send_json(400, {"error": "No domain specified"}); return
+
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}SUBF{Color.RESET} {Color.bold(domain)}")
+
+        cmd = f"subfinder -d {domain} -silent"
+        try:
+            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 300), 1800))
+
+            subs = [s for s in result.get("stdout", "").strip().split("\n") if s.strip()]
+
+            Stats.inc(commands_run=1)
+            self.send_json(200, {
+                "domain": domain,
+                "subdomains": subs,
+                "count": len(subs)
+            }, compress=True)
+        except Exception as e:
+            self.send_json(500, {"error": str(e)})
+
+    # ---------- FUZZ DIR ----------
+    def _handle_fuzz_dir(self, data):
+        target = data.get("target")
+        if not target or "FUZZ" not in target:
+            self.send_json(400, {"error": "Target must contain 'FUZZ' keyword (e.g., http://target.com/FUZZ)"}); return
+
+        # Default to a common wordlist if not provided
+        home = os.path.expanduser("~")
+        wordlist = data.get("wordlist", f"{home}/wordlists/SecLists-master/Discovery/Web-Content/common.txt")
+
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}FFUF{Color.RESET} {Color.bold(target)}")
+
+        # We output to a temp file because ffuf's stdout json can be noisy or malformed if interrupted
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
+        os.close(tmp_fd)
+
+        cmd = f"ffuf -u '{target}' -w '{wordlist}' -silent -o '{tmp_path}' -of json"
+
+        try:
+            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
+
+            # Read the generated JSON file
+            results = []
+            if os.path.exists(tmp_path):
+                try:
+                    with open(tmp_path, "r") as f:
+                        ffuf_data = json.load(f)
+                        if "results" in ffuf_data:
+                            # Clean up the output to only send necessary fields
+                            for r in ffuf_data["results"]:
+                                results.append({
+                                    "url": r.get("url"),
+                                    "status": r.get("status"),
+                                    "length": r.get("length"),
+                                    "words": r.get("words"),
+                                    "lines": r.get("lines"),
+                                    "redirectlocation": r.get("redirectlocation")
+                                })
+                except Exception as e:
+                    pass
+                os.remove(tmp_path)
+
+            Stats.inc(commands_run=1)
+            self.send_json(200, {
+                "target": target,
+                "results": results,
+                "count": len(results),
+                "stderr": result.get("stderr")
+            }, compress=True)
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            self.send_json(500, {"error": str(e)})
+
     # ---------- OPTIONS ----------
     def do_OPTIONS(self):
         self.send_response(200)
@@ -829,7 +976,7 @@ def main():
     if not sys.stdout.isatty():
         Color.disable()
 
-    parser = argparse.ArgumentParser(description="Bridge Agent v4.0 - Remote Terminal Bridge")
+    parser = argparse.ArgumentParser(description="Bridge Agent v4.5 (Pentest Edition) - Remote Terminal Bridge")
     parser.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
     parser.add_argument("--api-key", "-k", type=str, default=None)
     parser.add_argument("--log", "-l", type=str, default=None, help="Session log file (.jsonl)")
