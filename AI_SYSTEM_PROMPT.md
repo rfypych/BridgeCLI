@@ -137,3 +137,19 @@ Crawl a specific target deeply to extract all hidden endpoints, JavaScript files
 }
 ```
 **Returns**: Clean JSON array of discovered endpoints and their HTTP methods.
+
+---
+
+### 🛠️ Bash & Grep Best Practices (Avoiding FAILs)
+When you use the `exec` action to run raw Linux commands (like `curl | grep`), you must format your commands carefully.
+
+1. **Grep "Not Found" (`FAIL: 1`)**
+   If you run a command like `curl -s url | grep "password"` and the word "password" is not in the output, `grep` will exit with code `1`. The bridge will report this as `FAIL: 1`. **This is normal!** It just means your search string was not found. Do not panic; move on to the next attack vector.
+
+2. **Grep Syntax Errors (`FAIL: 2`)**
+   If you see `FAIL: 2`, your bash syntax is broken. The most common cause is **unescaped quotes inside quotes**.
+   **BAD**: `grep -o "path[^"]*"` (The inner quote breaks the JSON and the bash command).
+   **GOOD**: `grep -oE 'path[^"]*'` (Use single quotes for the grep string to avoid JSON escaping issues).
+
+3. **Pipe Chains & Stderr**
+   If you pipe commands (e.g., `curl -s url | grep x | head -5`), errors in the first command might be hidden. Always use `-s` for curl to suppress the progress bar, and avoid overly complex awk/sed chains if a simple python script or smart action would work better.
