@@ -43,24 +43,27 @@ Copy the contents of `AI_SYSTEM_PROMPT.md` and paste it into your AI Agent's sys
 
 ## 🤖 Smart AI Pentest Endpoints
 
-The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON payloads to execute commands.
+**CRITICAL NOTE FOR AI:**
+All smart pentest actions (`scan_nuclei`, `fuzz_dir`, `enum_subdomains`, `probe_alive`, `crawl_urls`) run in the background because they take a long time and we don't want you to timeout.
+When you call them, they will immediately return a `pid`. You MUST use the `poll` action with that `pid` to check the status. Once `"done": true`, the `poll` action will return the cleaned up JSON array of results!
 
-### `pentest_env` - Check Available Tools
+### `pentest_env` - Check Available Tools (Synchronous)
 ```json
 {
   "action": "pentest_env"
 }
 ```
 
-### `enum_subdomains` - Subdomain Discovery (Subfinder)
+### `enum_subdomains` - Subdomain Discovery (Background)
 ```json
 {
   "action": "enum_subdomains",
   "domain": "example.com"
 }
 ```
+*Returns:* `{"pid": "123", "status": "running", ...}`
 
-### `fuzz_dir` - Fuzzing (Ffuf)
+### `fuzz_dir` - Fuzzing (Background)
 ```json
 {
   "action": "fuzz_dir",
@@ -69,7 +72,7 @@ The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON 
 }
 ```
 
-### `probe_alive` - Live Host Check (Httpx)
+### `probe_alive` - Live Host Check (Background)
 ```json
 {
   "action": "probe_alive",
@@ -77,7 +80,7 @@ The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON 
 }
 ```
 
-### `crawl_urls` - URL Crawling (Katana)
+### `crawl_urls` - URL Crawling (Background)
 ```json
 {
   "action": "crawl_urls",
@@ -86,7 +89,7 @@ The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON 
 }
 ```
 
-### `scan_nuclei` - Vulnerability Scan
+### `scan_nuclei` - Vulnerability Scan (Background)
 ```json
 {
   "action": "scan_nuclei",
@@ -94,6 +97,16 @@ The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON 
   "severity": "critical,high"
 }
 ```
+
+### How to get the results:
+Send a `poll` request until `"done": true`:
+```json
+{
+  "action": "poll",
+  "pid": "123"
+}
+```
+*When done, this returns your parsed results (e.g. `{"done": true, "subdomains": [...]}`).*
 
 ---
 

@@ -576,23 +576,124 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
             proc_info = _bg_processes.get(pid)
         if not proc_info:
             self.send_json(404, {"error": f"No background process with pid={pid}"}); return
+
         if kill and not proc_info.get("done"):
             try:
                 proc_info["proc"].terminate()
                 print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KILL{Color.RESET} pid={pid}")
             except Exception:
                 pass
+
         done = proc_info.get("done", False)
         print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}POLL{Color.RESET} pid={pid} {'done' if done else 'running'}")
-        self.send_json(200, {
+
+        response = {
             "pid": pid,
             "command": proc_info.get("cmd"),
-            "stdout": proc_info.get("stdout", ""),
-            "stderr": proc_info.get("stderr", ""),
             "done": done,
             "returncode": proc_info.get("returncode"),
             "elapsed": round(time.time() - proc_info.get("started", time.time()), 2)
-        }, compress=True)
+        }
+
+        if not done:
+            self.send_json(200, response)
+            return
+
+        # Parse output if it's a smart action and hasn't been parsed yet
+        if "parsed_result" not in proc_info:
+            action_type = proc_info.get("action_type")
+            stdout = proc_info.get("stdout", "")
+            stderr = proc_info.get("stderr", "")
+            parsed_result = {}
+
+            if action_type == "scan_nuclei":
+                parsed = []
+                for line in stdout.strip().split("\n"):
+                    if line.strip():
+                        try: parsed.append(json.loads(line))
+                        except: pass
+                parsed_result = {
+                    "target": proc_info.get("target"),
+                    "vulnerabilities": parsed,
+                    "count": len(parsed),
+                    "raw_stderr": stderr
+                }
+            elif action_type == "enum_subdomains":
+                subs = [s for s in stdout.strip().split("\n") if s.strip()]
+                parsed_result = {
+                    "domain": proc_info.get("domain"),
+                    "subdomains": subs,
+                    "count": len(subs),
+                    "raw_stderr": stderr
+                }
+            elif action_type == "fuzz_dir":
+                tmp_path = proc_info.get("tmp_path")
+                results = []
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        with open(tmp_path, "r") as f:
+                            ffuf_data = json.load(f)
+                            for r in ffuf_data.get("results", []):
+                                results.append({
+                                    "url": r.get("url"), "status": r.get("status"),
+                                    "length": r.get("length"), "words": r.get("words"),
+                                    "redirectlocation": r.get("redirectlocation")
+                                })
+                    except: pass
+                    try: os.remove(tmp_path)
+                    except: pass
+                parsed_result = {
+                    "target": proc_info.get("target"),
+                    "results": results,
+                    "count": len(results),
+                    "stderr": stderr
+                }
+            elif action_type == "probe_alive":
+                parsed = []
+                for line in stdout.strip().split("\n"):
+                    if line.strip():
+                        try: parsed.append(json.loads(line))
+                        except: pass
+                tmp_path = proc_info.get("tmp_path")
+                if tmp_path and os.path.exists(tmp_path):
+                    try: os.remove(tmp_path)
+                    except: pass
+                parsed_result = {
+                    "alive": parsed,
+                    "count": len(parsed),
+                    "stderr": stderr
+                }
+            elif action_type == "crawl_urls":
+                parsed = []
+                for line in stdout.strip().split("\n"):
+                    if line.strip():
+                        try:
+                            obj = json.loads(line)
+                            clean_obj = {
+                                "url": obj.get("request", {}).get("endpoint", obj.get("url")),
+                                "method": obj.get("request", {}).get("method", "GET")
+                            }
+                            if clean_obj not in parsed:
+                                parsed.append(clean_obj)
+                        except: pass
+                parsed_result = {
+                    "target": proc_info.get("target"),
+                    "endpoints": parsed,
+                    "count": len(parsed),
+                    "stderr": stderr
+                }
+            else:
+                # Normal exec/bg
+                parsed_result = {
+                    "stdout": stdout,
+                    "stderr": stderr
+                }
+            proc_info["parsed_result"] = parsed_result
+
+        # Merge parsed_result into response
+        response.update(proc_info["parsed_result"])
+
+        self.send_json(200, response, compress=True)
 
     # ---------- LIST ----------
     def _handle_list(self, data):
@@ -849,29 +950,16 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if severity:
             cmd += f" -severity {severity}"
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}NUCL{Color.RESET} {Color.bold(target)}")
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}NUCL{Color.RESET} {Color.bold(target)} (bg)")
 
         try:
-            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
-            if result.get("returncode", -1) != 0 and not result.get("stdout"):
-                self.send_json(500, {"error": result.get("stderr", "Unknown error")}); return
-
-            # Parse JSONL output to array of objects
-            parsed = []
-            for line in result.get("stdout", "").strip().split("\n"):
-                if line.strip():
-                    try:
-                        parsed.append(json.loads(line))
-                    except:
-                        pass
+            pid = self.executor.execute_background(cmd)
+            with _bg_lock:
+                _bg_processes[pid]["action_type"] = "scan_nuclei"
+                _bg_processes[pid]["target"] = target
 
             Stats.inc(commands_run=1)
-            self.send_json(200, {
-                "target": target,
-                "vulnerabilities": parsed,
-                "count": len(parsed),
-                "raw_stderr": result.get("stderr")
-            }, compress=True)
+            self.send_json(200, {"pid": pid, "status": "running", "command": cmd, "message": "Run poll action with this pid to get results."})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
@@ -881,20 +969,17 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if not domain:
             self.send_json(400, {"error": "No domain specified"}); return
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}SUBF{Color.RESET} {Color.bold(domain)}")
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}SUBF{Color.RESET} {Color.bold(domain)} (bg)")
 
         cmd = f"subfinder -d {domain} -silent"
         try:
-            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 300), 1800))
-
-            subs = [s for s in result.get("stdout", "").strip().split("\n") if s.strip()]
+            pid = self.executor.execute_background(cmd)
+            with _bg_lock:
+                _bg_processes[pid]["action_type"] = "enum_subdomains"
+                _bg_processes[pid]["domain"] = domain
 
             Stats.inc(commands_run=1)
-            self.send_json(200, {
-                "domain": domain,
-                "subdomains": subs,
-                "count": len(subs)
-            }, compress=True)
+            self.send_json(200, {"pid": pid, "status": "running", "command": cmd, "message": "Run poll action with this pid to get results."})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
@@ -904,13 +989,11 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if not target or "FUZZ" not in target:
             self.send_json(400, {"error": "Target must contain 'FUZZ' keyword (e.g., http://target.com/FUZZ)"}); return
 
-        # Default to a common wordlist if not provided
         home = os.path.expanduser("~")
         wordlist = data.get("wordlist", f"{home}/wordlists/SecLists-master/Discovery/Web-Content/common.txt")
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}FFUF{Color.RESET} {Color.bold(target)}")
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}FFUF{Color.RESET} {Color.bold(target)} (bg)")
 
-        # We output to a temp file because ffuf's stdout json can be noisy or malformed if interrupted
         import tempfile
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
         os.close(tmp_fd)
@@ -918,41 +1001,19 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         cmd = f"ffuf -u '{target}' -w '{wordlist}' -silent -o '{tmp_path}' -of json"
 
         try:
-            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
-
-            # Read the generated JSON file
-            results = []
-            if os.path.exists(tmp_path):
-                try:
-                    with open(tmp_path, "r") as f:
-                        ffuf_data = json.load(f)
-                        if "results" in ffuf_data:
-                            # Clean up the output to only send necessary fields
-                            for r in ffuf_data["results"]:
-                                results.append({
-                                    "url": r.get("url"),
-                                    "status": r.get("status"),
-                                    "length": r.get("length"),
-                                    "words": r.get("words"),
-                                    "lines": r.get("lines"),
-                                    "redirectlocation": r.get("redirectlocation")
-                                })
-                except Exception as e:
-                    pass
-                os.remove(tmp_path)
+            pid = self.executor.execute_background(cmd)
+            with _bg_lock:
+                _bg_processes[pid]["action_type"] = "fuzz_dir"
+                _bg_processes[pid]["target"] = target
+                _bg_processes[pid]["tmp_path"] = tmp_path
 
             Stats.inc(commands_run=1)
-            self.send_json(200, {
-                "target": target,
-                "results": results,
-                "count": len(results),
-                "stderr": result.get("stderr")
-            }, compress=True)
+            self.send_json(200, {"pid": pid, "status": "running", "command": cmd, "message": "Run poll action with this pid to get results."})
         except Exception as e:
             if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                try: os.remove(tmp_path)
+                except: pass
             self.send_json(500, {"error": str(e)})
-
 
     # ---------- PROBE ALIVE (HTTPX) ----------
     def _handle_probe_alive(self, data):
@@ -960,9 +1021,8 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if not targets:
             self.send_json(400, {"error": "No targets specified. Provide an array of domains."}); return
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}HTTPX{Color.RESET} {Color.bold(f'{len(targets)} targets')}")
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}HTTPX{Color.RESET} {Color.bold(f'{len(targets)} targets')} (bg)")
 
-        # Write targets to temp file
         import tempfile
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
         with os.fdopen(tmp_fd, 'w') as f:
@@ -972,26 +1032,17 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         cmd = f"httpx -l '{tmp_path}' -silent -json -title -tech-detect -status-code"
 
         try:
-            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 300), 1800))
+            pid = self.executor.execute_background(cmd)
+            with _bg_lock:
+                _bg_processes[pid]["action_type"] = "probe_alive"
+                _bg_processes[pid]["tmp_path"] = tmp_path
 
-            parsed = []
-            for line in result.get("stdout", "").strip().split("\n"):
-                if line.strip():
-                    try:
-                        parsed.append(json.loads(line))
-                    except:
-                        pass
-
-            os.remove(tmp_path)
             Stats.inc(commands_run=1)
-            self.send_json(200, {
-                "alive": parsed,
-                "count": len(parsed),
-                "stderr": result.get("stderr")
-            }, compress=True)
+            self.send_json(200, {"pid": pid, "status": "running", "command": cmd, "message": "Run poll action with this pid to get results."})
         except Exception as e:
             if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+                try: os.remove(tmp_path)
+                except: pass
             self.send_json(500, {"error": str(e)})
 
     # ---------- CRAWL URLS (KATANA) ----------
@@ -1002,35 +1053,18 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
 
         depth = data.get("depth", 3)
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KATN{Color.RESET} {Color.bold(target)}")
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KATN{Color.RESET} {Color.bold(target)} (bg)")
 
         cmd = f"katana -u '{target}' -d {depth} -silent -json"
 
         try:
-            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
-
-            parsed = []
-            for line in result.get("stdout", "").strip().split("\n"):
-                if line.strip():
-                    try:
-                        obj = json.loads(line)
-                        # Clean up response to save tokens, only return the URL and parameters
-                        clean_obj = {
-                            "url": obj.get("request", {}).get("endpoint", obj.get("url")),
-                            "method": obj.get("request", {}).get("method", "GET")
-                        }
-                        if clean_obj not in parsed:
-                            parsed.append(clean_obj)
-                    except:
-                        pass
+            pid = self.executor.execute_background(cmd)
+            with _bg_lock:
+                _bg_processes[pid]["action_type"] = "crawl_urls"
+                _bg_processes[pid]["target"] = target
 
             Stats.inc(commands_run=1)
-            self.send_json(200, {
-                "target": target,
-                "endpoints": parsed,
-                "count": len(parsed),
-                "stderr": result.get("stderr")
-            }, compress=True)
+            self.send_json(200, {"pid": pid, "status": "running", "command": cmd, "message": "Run poll action with this pid to get results."})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
 
@@ -1057,6 +1091,12 @@ def signal_handler(signum, frame):
 
 def main():
     global API_KEY, LOG_FILE
+
+    # Ensure Go binary path is in environment so pentest tools work seamlessly
+    home_go_bin = os.path.expanduser("~/go/bin")
+    if home_go_bin not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + home_go_bin
+
 
     if not sys.stdout.isatty():
         Color.disable()
