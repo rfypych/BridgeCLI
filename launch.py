@@ -52,6 +52,20 @@ def cleanup(sig=None, frame=None):
             pass
     sys.exit(0)
 
+
+def find_free_port(start_port):
+    import socket
+    port = start_port
+    while port < start_port + 20:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("", port))
+                return port
+            except OSError:
+                port += 1
+    log("ERROR", f"Could not find a free port starting from {start_port}", R)
+    sys.exit(1)
+
 # ==================== DEPENDENCY CHECKS ====================
 def check_python():
     v = sys.version_info
@@ -226,10 +240,15 @@ def main():
     check_python()
     check_bridge_script()
     cf_path = None if args.no_tunnel else check_cloudflared()
+
+    # --- Find free port ---
+    actual_port = find_free_port(args.port)
+    if actual_port != args.port:
+        log("WARN ", f"Port {args.port} is busy. Using port {actual_port} instead.", Y)
     print()
 
     # --- Start bridge ---
-    bridge_proc = start_bridge(args.port, args.api_key, args.no_color, args.log)
+    bridge_proc = start_bridge(actual_port, args.api_key, args.no_color, args.log)
 
     # --- Start cloudflared ---
     cf_proc = None
@@ -239,10 +258,10 @@ def main():
         protocols = [args.protocol] if args.protocol else None
         if protocols:
             # Force specific protocol
-            cf_proc, tunnel_url = start_cloudflared(cf_path, args.port, protocols[0])
+            cf_proc, tunnel_url = start_cloudflared(cf_path, actual_port, protocols[0])
         else:
             # Auto fallback
-            cf_proc, tunnel_url, used_protocol = launch_cloudflared_with_fallback(cf_path, args.port)
+            cf_proc, tunnel_url, used_protocol = launch_cloudflared_with_fallback(cf_path, actual_port)
 
         if tunnel_url:
             print(f"\n  {DIM}{'=' * 44}{RESET}")
@@ -254,11 +273,11 @@ def main():
             print(f"  {DIM}Run ./setup_pentest_env.sh to install offensive tools first!{RESET}")
         else:
             log("WARN ", "Could not establish tunnel. Bridge is still running locally.", Y)
-            print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{args.port}{RESET}\n")
+            print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{actual_port}{RESET}\n")
     else:
         if not args.no_tunnel:
             log("INFO ", "Running without tunnel (local only)", Y)
-        print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{args.port}{RESET}\n")
+        print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{actual_port}{RESET}\n")
 
     # --- Monitor ---
     print(f"  {DIM}Press Ctrl+C to stop everything{RESET}\n")

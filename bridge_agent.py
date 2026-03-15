@@ -1088,27 +1088,20 @@ def main():
     print(f"  {div}\n")
 
     port = args.port
-    for attempt in range(10):
-        try:
-            server = ReuseAddrServer(("", port), BridgeHandler)
-            if port != args.port:
-                print(f"  {Color.WARN}NOTE{Color.RESET}  "
-                      f"Port {args.port} was busy, using {Color.BRIGHT_YELLOW}{port}{Color.RESET} instead")
-            print(f"  {Color.SUCCESS}READY{Color.RESET} {Color.dim('Listening for connections...')}")
-            print(f"  {Color.dim('Press Ctrl+C to stop')}\n")
-            server.serve_forever()
-            break
-        except OSError as e:
-            if "Address already in use" in str(e) or "10048" in str(e):
-                print(f"  {Color.WARN}BUSY {Color.RESET} Port {port} is in use, trying {port + 1}...")
-                port += 1
-                if attempt == 9:
-                    print(f"  Port {args.port}-{port}: no free port found.")
-            else:
-                raise
-        except KeyboardInterrupt:
-            print(f"\n  {Color.WARN}Stopped.{Color.RESET}")
-            break
+    try:
+        server = ReuseAddrServer(("", port), BridgeHandler)
+        print(f"  {Color.SUCCESS}READY{Color.RESET} {Color.dim(f'Listening for connections on port {port}...')}")
+        print(f"  {Color.dim('Press Ctrl+C to stop')}\n")
+        server.serve_forever()
+    except OSError as e:
+        if "Address already in use" in str(e) or "10048" in str(e):
+            print(f"  {Color.ERROR}FATAL{Color.RESET} Port {port} is already in use!")
+            print(f"  {Color.dim('Please use another port with --port <number>')}")
+            sys.exit(1)
+        else:
+            raise
+    except KeyboardInterrupt:
+        print(f"\n  {Color.WARN}Stopped.{Color.RESET}")
 
 
 if __name__ == "__main__":
