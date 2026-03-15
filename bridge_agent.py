@@ -335,7 +335,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 "capabilities": [
                     "exec", "bg", "poll",
                     "list", "stat", "read", "write", "mkdir", "delete", "move",
-                    "pentest_env", "scan_nuclei", "enum_subdomains", "fuzz_dir",
+                    "pentest_env", "scan_nuclei", "enum_subdomains", "fuzz_dir", "probe_alive", "crawl_urls",
                     "upload", "download", "stats"
                 ],
                 "usage": {
@@ -355,7 +355,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     "pentest_env": {"body": {"action": "pentest_env"}, "description": "Check available pentest tools and paths."},
                     "scan_nuclei": {"body": {"action": "scan_nuclei", "target": "https://...", "templates": "(opt)", "severity": "(opt)"}, "description": "Run nuclei scan and return JSON array."},
                     "enum_subdomains": {"body": {"action": "enum_subdomains", "domain": "example.com"}, "description": "Run subfinder and return JSON array of subdomains."},
-                    "fuzz_dir": {"body": {"action": "fuzz_dir", "target": "http://.../FUZZ", "wordlist": "(opt)"}, "description": "Run ffuf and return valid endpoints as JSON array."}
+                    "fuzz_dir": {"body": {"action": "fuzz_dir", "target": "http://.../FUZZ", "wordlist": "(opt)"}, "description": "Run ffuf and return valid endpoints as JSON array."},
+                    "probe_alive": {"body": {"action": "probe_alive", "targets": ["example.com"]}, "description": "Run httpx to check live hosts and tech stack."},
+                    "crawl_urls": {"body": {"action": "crawl_urls", "target": "https://example.com"}, "description": "Run katana to crawl URLs and endpoints."}
                 },
                 "hint": "POST to / with JSON body to run commands or manage files on the host machine."
             })
@@ -494,6 +496,8 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                 "scan_nuclei":     self._handle_scan_nuclei,
                 "enum_subdomains": self._handle_enum_subdomains,
                 "fuzz_dir":        self._handle_fuzz_dir,
+                "probe_alive":     self._handle_probe_alive,
+                "crawl_urls":      self._handle_crawl_urls,
                 "bg":       self._handle_bg,
                 "poll":     self._handle_poll,
                 "list":     self._handle_list,
@@ -947,6 +951,87 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         except Exception as e:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+            self.send_json(500, {"error": str(e)})
+
+
+    # ---------- PROBE ALIVE (HTTPX) ----------
+    def _handle_probe_alive(self, data):
+        targets = data.get("targets", [])
+        if not targets:
+            self.send_json(400, {"error": "No targets specified. Provide an array of domains."}); return
+
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}HTTPX{Color.RESET} {Color.bold(f'{len(targets)} targets')}")
+
+        # Write targets to temp file
+        import tempfile
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+        with os.fdopen(tmp_fd, 'w') as f:
+            for t in targets:
+                f.write(f"{t}\n")
+
+        cmd = f"httpx -l '{tmp_path}' -silent -json -title -tech-detect -status-code"
+
+        try:
+            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 300), 1800))
+
+            parsed = []
+            for line in result.get("stdout", "").strip().split("\n"):
+                if line.strip():
+                    try:
+                        parsed.append(json.loads(line))
+                    except:
+                        pass
+
+            os.remove(tmp_path)
+            Stats.inc(commands_run=1)
+            self.send_json(200, {
+                "alive": parsed,
+                "count": len(parsed),
+                "stderr": result.get("stderr")
+            }, compress=True)
+        except Exception as e:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            self.send_json(500, {"error": str(e)})
+
+    # ---------- CRAWL URLS (KATANA) ----------
+    def _handle_crawl_urls(self, data):
+        target = data.get("target")
+        if not target:
+            self.send_json(400, {"error": "No target specified"}); return
+
+        depth = data.get("depth", 3)
+
+        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KATN{Color.RESET} {Color.bold(target)}")
+
+        cmd = f"katana -u '{target}' -d {depth} -silent -json"
+
+        try:
+            result = self.executor.execute(cmd, timeout=min(data.get("timeout", 600), 3600))
+
+            parsed = []
+            for line in result.get("stdout", "").strip().split("\n"):
+                if line.strip():
+                    try:
+                        obj = json.loads(line)
+                        # Clean up response to save tokens, only return the URL and parameters
+                        clean_obj = {
+                            "url": obj.get("request", {}).get("endpoint", obj.get("url")),
+                            "method": obj.get("request", {}).get("method", "GET")
+                        }
+                        if clean_obj not in parsed:
+                            parsed.append(clean_obj)
+                    except:
+                        pass
+
+            Stats.inc(commands_run=1)
+            self.send_json(200, {
+                "target": target,
+                "endpoints": parsed,
+                "count": len(parsed),
+                "stderr": result.get("stderr")
+            }, compress=True)
+        except Exception as e:
             self.send_json(500, {"error": str(e)})
 
     # ---------- OPTIONS ----------

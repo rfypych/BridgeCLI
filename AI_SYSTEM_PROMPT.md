@@ -88,3 +88,24 @@ If you need to run custom tools not covered by the smart actions (e.g., `nmap` o
 4. **Think Outside the Box**: If the automated tools fail, use the `exec` action to drop down to raw bash, python scripts, or curl requests to build custom exploits.
 
 Good hunting.
+
+#### 5. Alive Hosts & Tech Detection (`probe_alive`)
+Send an array of subdomains to quickly identify which ones are alive, their status codes, and the technology stack (React, Nginx, PHP, etc.) running on them using `httpx`.
+```json
+{
+  "action": "probe_alive",
+  "targets": ["sub1.target.com", "sub2.target.com"]
+}
+```
+**Returns**: JSON array of alive hosts with their `status_code`, `title`, and `technologies`.
+
+#### 6. Smart URL Crawling (`crawl_urls`)
+Crawl a specific target deeply to extract all hidden endpoints, JavaScript files, and URL parameters using `katana`.
+```json
+{
+  "action": "crawl_urls",
+  "target": "https://api.target.com",
+  "depth": 3
+}
+```
+**Returns**: Clean JSON array of discovered endpoints and their HTTP methods.

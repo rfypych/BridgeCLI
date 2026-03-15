@@ -69,6 +69,23 @@ The Bridge Agent accepts HTTP `POST` requests at the root path (`/`). Send JSON 
 }
 ```
 
+### `probe_alive` - Live Host Check (Httpx)
+```json
+{
+  "action": "probe_alive",
+  "targets": ["sub1.example.com", "sub2.example.com"]
+}
+```
+
+### `crawl_urls` - URL Crawling (Katana)
+```json
+{
+  "action": "crawl_urls",
+  "target": "https://example.com",
+  "depth": 3
+}
+```
+
 ### `scan_nuclei` - Vulnerability Scan
 ```json
 {
