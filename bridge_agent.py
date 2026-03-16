@@ -34,6 +34,20 @@ from io import BytesIO
 from datetime import datetime
 import socket
 import platform
+import collections
+
+try:
+    from rich.live import Live
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from rich.text import Text
+    from rich import box
+    from rich.console import Console
+    from rich.align import Align
+    RICH_INSTALLED = True
+except ImportError:
+    RICH_INSTALLED = False
 
 # Force UTF-8 output on Windows
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -145,6 +159,97 @@ class Color:
 
 
 # ==================== HELPERS ====================
+
+# ==================== TUI DASHBOARD ====================
+console = Console() if RICH_INSTALLED else None
+log_history = collections.deque(maxlen=20)  # Keep last 20 log entries
+tui_lock = threading.Lock()
+
+class BridgeTUI:
+    @staticmethod
+    def generate_layout(port, auth_enabled):
+        layout = Layout()
+        layout.split(
+            Layout(name="header", size=3),
+            Layout(name="main"),
+            Layout(name="footer", size=3)
+        )
+        layout["main"].split_row(
+            Layout(name="logs", ratio=2),
+            Layout(name="sidebar", ratio=1)
+        )
+        layout["sidebar"].split_column(
+            Layout(name="stats", size=8),
+            Layout(name="tasks")
+        )
+        return BridgeTUI.update_layout(layout, port, auth_enabled)
+
+    @staticmethod
+    def update_layout(layout, port, auth_enabled):
+        with tui_lock:
+            # Header
+            ip = get_local_ip()
+            auth_s = "[bold green]ENABLED[/bold green]" if auth_enabled else "[bold red]DISABLED[/bold red]"
+            tunnel = os.environ.get("TUNNEL_URL", f"http://{ip}:{port}")
+            header_text = Text(f"🚀 Bridge Agent v4.5 (Pentest Edition) | {tunnel} | Auth: ", style="bold cyan")
+            header_text.append(Text.from_markup(auth_s))
+            layout["header"].update(Panel(Align.center(header_text, vertical="middle"), style="blue", box=box.ROUNDED))
+
+            # Logs
+            log_text = Text()
+            for entry in list(log_history):
+                log_text.append(entry + "\n")
+            layout["logs"].update(Panel(log_text, title="[bold green]📡 Live AI Activity Logs[/bold green]", border_style="green", box=box.ROUNDED))
+
+            # Stats
+            snap = Stats.snapshot()
+            up_str = format_duration(snap["uptime_seconds"])
+            stats_table = Table(box=box.SIMPLE, show_header=False)
+            stats_table.add_column("Key", style="bold yellow")
+            stats_table.add_column("Value", style="cyan")
+            stats_table.add_row("Uptime", up_str)
+            stats_table.add_row("Requests", str(snap["requests"]))
+            stats_table.add_row("Commands", str(snap["commands_run"]))
+            stats_table.add_row("Errors", f"[bold red]{snap['errors']}[/bold red]" if snap['errors'] > 0 else "0")
+            stats_table.add_row("Bytes Sent", format_size(snap["bytes_sent"]))
+            stats_table.add_row("Bytes Recv", format_size(snap["bytes_received"]))
+            layout["stats"].update(Panel(stats_table, title="[bold yellow]📊 Analytics[/bold yellow]", border_style="yellow", box=box.ROUNDED))
+
+            # Active Tasks
+            tasks_table = Table(expand=True, box=box.SIMPLE)
+            tasks_table.add_column("PID", style="bold cyan")
+            tasks_table.add_column("Type", style="bold magenta")
+            tasks_table.add_column("Time", justify="right")
+
+            with _bg_lock:
+                active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
+
+            for pid, info in active_tasks[-10:]: # Show last 10 active tasks
+                action_type = info.get("action_type", "bg")
+                elapsed = format_duration(time.time() - info.get("started", time.time()))
+                tasks_table.add_row(pid[:8], action_type.upper(), elapsed)
+
+            layout["tasks"].update(Panel(tasks_table, title="[bold magenta]⚙️ Active BG Tasks[/bold magenta]", border_style="magenta", box=box.ROUNDED))
+
+            # Footer
+            footer_text = Text("Press Ctrl+C to Stop • Waiting for AI payloads...", justify="center", style="dim white")
+            layout["footer"].update(Panel(footer_text, style="dim", box=box.ROUNDED))
+
+            return layout
+
+def log_tui(tag, msg, color="white"):
+    ts_str = ts()
+    if RICH_INSTALLED:
+        with tui_lock:
+            log_history.append(f"[dim][{ts_str}][/dim] [bold {color}]{tag:<5}[/bold {color}] {msg}")
+    else:
+        # Fallback to standard print if rich is not installed
+        print(f"[{ts_str}] {tag} {msg}")
+
+# Override normal print logging across the app
+def legacy_print(*args, **kwargs):
+    pass  # We silence normal prints because they break the TUI
+
 def get_local_ip():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -298,7 +403,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if "Broken pipe" in str(e) or "Connection reset" in str(e):
                 pass
             else:
-                print(f"  {Color.ERROR}SEND ERR{Color.RESET} {e}")
+                log_tui("ERR", f"Send Error: {e}", "red")
 
     def check_auth(self):
         if not API_KEY:
@@ -326,7 +431,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self._send_html_landing()
         else:
             # Return JSON for curl/API clients
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.SUCCESS}GET{Color.RESET}  {Color.dim('/ - Health Check (JSON)')}")
+            log_tui("GET", "/ - Health Check", "green")
             self.send_json(200, {
                 "type": "pentest-bridge",
                 "status": "online",
@@ -372,7 +477,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def _send_html_landing(self):
         """Return HTML landing page with full bridge instructions."""
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}GET{Color.RESET}  {Color.dim('/ - HTML Landing Page (AI/Browser)')}")
+        log_tui("GET", "/ - HTML Landing Page", "blue")
         host_info = f"{socket.gethostname()} &bull; {platform.system()} {platform.release()}"
         cwd = os.getcwd().replace("\\", "\\\\")
         shells = ", ".join(BridgeHandler._detected_shells or ["unknown"])
@@ -542,7 +647,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         cwd = data.get("cwd") or None
         env = data.get("env") or None
         cwd_hint = f" {Color.dim('@ ' + cwd)}" if cwd else ""
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.CMD}EXEC{Color.RESET} {Color.bold(cmd)}{cwd_hint}")
+        log_tui("EXEC", f"{cmd[:50]}...", "magenta")
         t0 = time.time()
         result = self.executor.execute(cmd, timeout, cwd=cwd, env=env)
         elapsed = time.time() - t0
@@ -552,7 +657,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         status = (Color.color("DONE", Color.BRIGHT_GREEN) if rc == 0
                   else Color.color("TIMEOUT", Color.BRIGHT_YELLOW) if result.get("timeout")
                   else Color.color(f"FAIL:{rc}", Color.BRIGHT_RED))
-        print(f"           {status} {Color.dim(format_size(out_size))} {Color.dim('|')} {Color.dim(format_duration(elapsed))}")
+        pass
         session_log({"action": "exec", "cmd": cmd, "cwd": cwd, "rc": rc, "elapsed": round(elapsed, 3)})
         self.send_json(200, result, compress=True)
 
@@ -564,7 +669,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         cwd = data.get("cwd") or None
         env = data.get("env") or None
         cwd_hint = f" {Color.dim('@ ' + cwd)}" if cwd else ""
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}BG  {Color.RESET} {Color.bold(cmd)}{cwd_hint}")
+        log_tui("BG", f"{cmd[:50]}... -> PID {pid}", "yellow")
         try:
             pid = self.executor.execute_background(cmd, cwd=cwd, env=env)
             Stats.inc(commands_run=1)
@@ -588,12 +693,12 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if kill and not proc_info.get("done"):
             try:
                 proc_info["proc"].terminate()
-                print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KILL{Color.RESET} pid={pid}")
+                log_tui("KILL", f"pid={pid}", "red")
             except Exception:
                 pass
 
         done = proc_info.get("done", False)
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}POLL{Color.RESET} pid={pid} {'done' if done else 'running'}")
+        log_tui("POLL", f"pid={pid} (done)" if done else f"pid={pid} (running)", "cyan")
 
         response = {
             "pid": pid,
@@ -731,7 +836,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                     except PermissionError:
                         entries.append({"name": name, "type": "unknown", "error": "permission denied"})
 
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}LIST{Color.RESET} {Color.bold(abs_path)} {Color.dim(f'({len(entries)} entries)')}")
+            log_tui("LIST", abs_path, "blue")
             self.send_json(200, {"path": abs_path, "entries": entries, "count": len(entries)})
         except PermissionError:
             self.send_json(403, {"error": "Permission denied"})
@@ -765,7 +870,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                     for chunk in iter(lambda: f.read(65536), b""):
                         h.update(chunk)
                 result["md5"] = h.hexdigest()
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}STAT{Color.RESET} {Color.bold(abs_path)}")
+            log_tui("STAT", abs_path, "blue")
             self.send_json(200, result)
         except PermissionError:
             self.send_json(403, {"error": "Permission denied"})
@@ -787,7 +892,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                 self.send_json(413, {"error": f"File too large ({format_size(size)}). Use 'download' for binary/large files."}); return
             with open(abs_path, "r", encoding=encoding, errors="replace") as f:
                 content = f.read()
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.DOWNLOAD}READ{Color.RESET} {Color.bold(abs_path)} {Color.dim(format_size(size))}")
+            log_tui("READ", abs_path, "cyan")
             self.send_json(200, {"path": abs_path, "content": content, "size": size, "encoding": encoding}, compress=True)
         except UnicodeDecodeError:
             self.send_json(400, {"error": "Cannot decode as text. Use 'download' for binary files."})
@@ -813,7 +918,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
             with open(abs_path, write_mode, encoding=encoding) as f:
                 f.write(content)
             size = os.path.getsize(abs_path)
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.UPLOAD}WRIT{Color.RESET} {Color.bold(abs_path)} {Color.dim(format_size(size))}")
+            log_tui("WRIT", abs_path, "yellow")
             self.send_json(200, {"success": True, "path": abs_path, "size": size})
         except PermissionError:
             self.send_json(403, {"error": "Permission denied"})
@@ -828,7 +933,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         abs_path = os.path.abspath(path)
         try:
             os.makedirs(abs_path, exist_ok=True)
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}MKDR{Color.RESET} {Color.bold(abs_path)}")
+            log_tui("MKDR", abs_path, "blue")
             self.send_json(200, {"success": True, "path": abs_path})
         except PermissionError:
             self.send_json(403, {"error": "Permission denied"})
@@ -852,7 +957,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                     os.rmdir(abs_path)  # will fail if not empty — intentional safety
             else:
                 os.remove(abs_path)
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.ERROR}DEL {Color.RESET} {Color.bold(abs_path)}")
+            log_tui("DEL", abs_path, "red")
             self.send_json(200, {"success": True, "path": abs_path})
         except OSError as e:
             self.send_json(400, {"error": str(e) + " (use recursive=true for non-empty dirs)"})
@@ -871,7 +976,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
             if not os.path.exists(abs_src):
                 self.send_json(404, {"error": f"Not found: {abs_src}"}); return
             shutil.move(abs_src, abs_dst)
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}MOVE{Color.RESET} {Color.bold(abs_src)} {Color.dim('->')} {Color.bold(abs_dst)}")
+            log_tui("MOVE", f"{abs_src} -> {abs_dst}", "blue")
             self.send_json(200, {"success": True, "src": abs_src, "dst": abs_dst})
         except PermissionError:
             self.send_json(403, {"error": "Permission denied"})
@@ -891,7 +996,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                 os.makedirs(dir_path, exist_ok=True)
             with open(filename, write_mode) as f:
                 f.write(content)
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.UPLOAD} UP {Color.RESET} {Color.bold(filename)} {Color.dim(format_size(len(content)))}")
+            log_tui("UP", filename, "yellow")
             self.send_json(200, {"success": True, "filename": filename, "size": len(content)})
         except Exception as e:
             self.send_json(500, {"error": str(e)})
@@ -912,7 +1017,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
                 chunk = f.read(chunk_size)
                 actual_offset = f.tell()
             progress = f"{format_size(actual_offset)}/{format_size(file_size)}"
-            print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.DOWNLOAD}DOWN{Color.RESET} {Color.bold(filename)} {Color.dim(progress)}")
+            log_tui("DOWN", filename, "cyan")
             self.send_json(200, {
                 "success": True, "filename": filename,
                 "data": base64.b64encode(chunk).decode('utf-8'),
@@ -925,7 +1030,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
     # ---------- STATS ----------
     def _handle_stats(self, _data):
         snap = Stats.snapshot()
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}STAT{Color.RESET} {Color.dim('server stats requested')}")
+        log_tui("STAT", "Server stats requested", "blue")
         self.send_json(200, snap)
 
 
@@ -944,7 +1049,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
             "nuclei_templates_path": f"{home}/nuclei-templates",
             "go_path": f"{home}/go/bin"
         }
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.INFO}PENT{Color.RESET} {Color.dim('pentest env checked')}")
+        log_tui("PENT", "Checked tools", "blue")
         self.send_json(200, env_info)
 
     # ---------- SCAN NUCLEI ----------
@@ -962,7 +1067,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if severity:
             cmd += f" -severity {severity}"
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}NUCL{Color.RESET} {Color.bold(target)} (bg)")
+        log_tui("NUCL", target, "yellow")
 
         try:
             pid = self.executor.execute_background(cmd)
@@ -981,7 +1086,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if not domain:
             self.send_json(400, {"error": "No domain specified"}); return
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}SUBF{Color.RESET} {Color.bold(domain)} (bg)")
+        log_tui("SUBF", domain, "yellow")
 
         cmd = f"subfinder -d {domain} -silent"
         try:
@@ -1004,7 +1109,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         home = os.path.expanduser("~")
         wordlist = data.get("wordlist", f"{home}/wordlists/SecLists-master/Discovery/Web-Content/common.txt")
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}FFUF{Color.RESET} {Color.bold(target)} (bg)")
+        log_tui("FFUF", target, "yellow")
 
         import tempfile
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json")
@@ -1033,7 +1138,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
         if not targets:
             self.send_json(400, {"error": "No targets specified. Provide an array of domains."}); return
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}HTTPX{Color.RESET} {Color.bold(f'{len(targets)} targets')} (bg)")
+        log_tui("HTTPX", f"{len(targets)} targets", "yellow")
 
         import tempfile
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
@@ -1065,7 +1170,7 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
 
         depth = data.get("depth", 3)
 
-        print(f"  {Color.TIME}[{ts()}]{Color.RESET} {Color.WARN}KATN{Color.RESET} {Color.bold(target)} (bg)")
+        log_tui("KATN", target, "yellow")
 
         cmd = f"katana -u '{target}' -d {depth} -silent -json"
 
@@ -1129,31 +1234,49 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    print_banner(args.port, API_KEY is not None)
-
-    div = Color.dim('=' * 42)
-    print(f"  {Color.bold('OS:')}        {platform.system()} {platform.release()}")
-    print(f"  {Color.bold('Python:')}    {sys.version.split()[0]}")
-    print(f"  {Color.bold('Directory:')} {Color.dim(os.getcwd())}")
-    if LOG_FILE:
-        print(f"  {Color.bold('Log:')}       {Color.dim(LOG_FILE)}")
-    print(f"  {div}\n")
-
     port = args.port
-    try:
-        server = ReuseAddrServer(("", port), BridgeHandler)
-        print(f"  {Color.SUCCESS}READY{Color.RESET} {Color.dim(f'Listening for connections on port {port}...')}")
-        print(f"  {Color.dim('Press Ctrl+C to stop')}\n")
-        server.serve_forever()
-    except OSError as e:
-        if "Address already in use" in str(e) or "10048" in str(e):
-            print(f"  {Color.ERROR}FATAL{Color.RESET} Port {port} is already in use!")
-            print(f"  {Color.dim('Please use another port with --port <number>')}")
-            sys.exit(1)
-        else:
-            raise
-    except KeyboardInterrupt:
-        print(f"\n  {Color.WARN}Stopped.{Color.RESET}")
+    auth_enabled = API_KEY is not None
+
+    if RICH_INSTALLED:
+        try:
+            server = ReuseAddrServer(("", port), BridgeHandler)
+        except OSError as e:
+            if "Address already in use" in str(e) or "10048" in str(e):
+                print(f"FATAL: Port {port} is already in use! Please use another port.")
+                sys.exit(1)
+            else:
+                raise
+
+        log_tui("READY", f"Listening on port {port}...", "green")
+
+        def tui_loop(layout, p, auth):
+            with Live(layout, refresh_per_second=4, screen=True) as live:
+                while True:
+                    time.sleep(0.25)
+                    live.update(BridgeTUI.update_layout(layout, p, auth))
+
+        layout = BridgeTUI.generate_layout(port, auth_enabled)
+        tui_thread = threading.Thread(target=tui_loop, args=(layout, port, auth_enabled), daemon=True)
+        tui_thread.start()
+
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+    else:
+        print_banner(args.port, auth_enabled)
+        try:
+            server = ReuseAddrServer(("", port), BridgeHandler)
+            print(f"READY Listening for connections on port {port}...")
+            server.serve_forever()
+        except OSError as e:
+            if "Address already in use" in str(e) or "10048" in str(e):
+                print(f"FATAL: Port {port} is already in use!")
+                sys.exit(1)
+            else:
+                raise
+        except KeyboardInterrupt:
+            print("Stopped.")
 
 
 if __name__ == "__main__":

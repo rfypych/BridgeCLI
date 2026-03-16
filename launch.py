@@ -247,40 +247,30 @@ def main():
         log("WARN ", f"Port {args.port} is busy. Using port {actual_port} instead.", Y)
     print()
 
-    # --- Start bridge ---
-    bridge_proc = start_bridge(actual_port, args.api_key, args.no_color, args.log)
-
-    # --- Start cloudflared ---
+    # --- Start cloudflared FIRST so we have the URL ---
     cf_proc = None
     tunnel_url = None
 
     if cf_path:
         protocols = [args.protocol] if args.protocol else None
         if protocols:
-            # Force specific protocol
             cf_proc, tunnel_url = start_cloudflared(cf_path, actual_port, protocols[0])
         else:
-            # Auto fallback
             cf_proc, tunnel_url, used_protocol = launch_cloudflared_with_fallback(cf_path, actual_port)
 
-        if tunnel_url:
-            print(f"\n  {DIM}{'=' * 44}{RESET}")
-            print(f"  {G}{BOLD}TUNNEL READY{RESET}")
-            print(f"  {BOLD}URL:{RESET}  {C}{BOLD}{tunnel_url}{RESET}")
-            print(f"  {DIM}{'=' * 44}{RESET}\n")
-            print(f"  Give this to your AI agent:")
-            print(f"  {Y}curl -s {tunnel_url}/{RESET}\n")
-            print(f"  {DIM}Run ./setup_pentest_env.sh to install offensive tools first!{RESET}")
-        else:
-            log("WARN ", "Could not establish tunnel. Bridge is still running locally.", Y)
-            print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{actual_port}{RESET}\n")
+    # Clean up launcher output before TUI takes over
+    import time
+    time.sleep(1)
+
+    if tunnel_url:
+        os.environ["TUNNEL_URL"] = tunnel_url
     else:
-        if not args.no_tunnel:
-            log("INFO ", "Running without tunnel (local only)", Y)
-        print(f"\n  {BOLD}Local URL:{RESET} {C}http://localhost:{actual_port}{RESET}\n")
+        os.environ["TUNNEL_URL"] = f"http://localhost:{actual_port}"
+
+    # --- Start bridge TUI ---
+    bridge_proc = start_bridge(actual_port, args.api_key, args.no_color, args.log)
 
     # --- Monitor ---
-    print(f"  {DIM}Press Ctrl+C to stop everything{RESET}\n")
     monitor_thread = threading.Thread(target=monitor_processes, args=(bridge_proc, cf_proc), daemon=True)
     monitor_thread.start()
 
