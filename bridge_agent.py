@@ -117,9 +117,6 @@ def _bg_reader(pid_key: str, proc: subprocess.Popen):
 log_history = collections.deque(maxlen=100)
 tui_lock = threading.Lock()
 
-# Silence prints natively
-import sys, os
-sys.stdout = open(os.devnull, 'w')
 
 
 def get_local_ip():
@@ -256,23 +253,27 @@ def draw_tui(stdscr, port, auth_enabled):
         except curses.error:
             pass # Ignore terminal resize errors
 
-def start_tui_thread(port, auth_enabled):
-    def wrapper():
-        try:
-            # wrapper automatically restores terminal state on crash
-            curses.wrapper(draw_tui, port, auth_enabled)
-        except KeyboardInterrupt:
-            pass
-        except Exception as e:
-            # If the TUI crashes, we must restore the terminal and print the error to stderr
-            curses.endwin()
-            sys.stderr.write(f"TUI CRASHED: {e}\n")
-        finally:
-            # Tell the main thread to die if the TUI exits
-            os.kill(os.getpid(), signal.SIGINT)
+def run_tui(port, auth_enabled):
+    try:
+        # Before taking over the screen, silence stdout/stderr so HTTP server logs don't corrupt the TUI
+        class DummyWriter:
+            def write(self, *args, **kwargs): pass
+            def flush(self, *args, **kwargs): pass
+        sys.stdout = DummyWriter()
+        sys.stderr = DummyWriter()
 
-    t = threading.Thread(target=wrapper, daemon=True)
-    t.start()
+        # wrapper automatically restores terminal state on crash
+        curses.wrapper(draw_tui, port, auth_enabled)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        curses.endwin()
+        # Restore sys.stderr to print the crash reason
+        sys.stderr = sys.__stderr__
+        sys.stderr.write(f"TUI CRASHED: {e}\n")
+    finally:
+        os._exit(0)  # Kill the whole process and all daemon threads
+
 
 
 def detect_shells():
@@ -1265,14 +1266,14 @@ def main():
         else:
             raise
 
-    # Launch Curses TUI
-    start_tui_thread(port, auth_enabled)
+    # 1. Start the HTTP Server in a Background Daemon Thread
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+
     log_tui("READY", f"Listening on port {port}...")
 
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    # 2. Start the Curses TUI in the Main Thread (Blocking)
+    run_tui(port, auth_enabled)
 
 if __name__ == "__main__":
     main()
