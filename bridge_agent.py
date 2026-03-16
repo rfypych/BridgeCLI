@@ -262,6 +262,7 @@ class CommandExecutor:
 
 # ==================== HTTP HANDLER ====================
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
+    timeout = 300  # 5 minutes socket timeout to prevent eager drops
     executor = CommandExecutor()
     protocol_version = 'HTTP/1.1'
     _detected_shells = None
@@ -289,8 +290,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
+        except BrokenPipeError:
+            pass  # Client disconnected early, normal for AI agents/tunnels
+        except ConnectionResetError:
+            pass  # Client reset connection
         except Exception as e:
-            print(f"  {Color.ERROR}SEND ERR{Color.RESET} {e}")
+            if "Broken pipe" in str(e) or "Connection reset" in str(e):
+                pass
+            else:
+                print(f"  {Color.ERROR}SEND ERR{Color.RESET} {e}")
 
     def check_auth(self):
         if not API_KEY:
@@ -692,6 +700,10 @@ curl -s -X POST {url}/ -H "Content-Type: application/json" \\
 
         # Merge parsed_result into response
         response.update(proc_info["parsed_result"])
+
+        # If output is massively large, the AI/tunnel might drop the connection while transferring.
+        # Ensure we don't blow up memory here, JSON encoding large dicts is safe enough but can be big.
+        # The gzip compression in send_json handles the transfer size nicely.
 
         self.send_json(200, response, compress=True)
 

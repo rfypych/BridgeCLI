@@ -153,3 +153,13 @@ When you use the `exec` action to run raw Linux commands (like `curl | grep`), y
 
 3. **Pipe Chains & Stderr**
    If you pipe commands (e.g., `curl -s url | grep x | head -5`), errors in the first command might be hidden. Always use `-s` for curl to suppress the progress bar, and avoid overly complex awk/sed chains if a simple python script or smart action would work better.
+
+---
+### 🌊 Dealing with Massive Output & Broken Pipes
+If you run `poll` on a background action (like a deep `ffuf` or `nuclei` scan) and the result is HUGE, your cloud environment might cut the connection early ("Broken Pipe") before downloading the whole JSON.
+
+1. **Be Specific in Scans**: Use `severity` flags in `scan_nuclei` or a smaller `depth` in `crawl_urls` to keep results concise.
+2. **If `poll` fails multiple times**: Use the `exec` action to pipe the output into a file and `read` or `download` it in chunks instead:
+   ```json
+   { "action": "exec", "command": "cat /tmp/results.json | head -n 100" }
+   ```
