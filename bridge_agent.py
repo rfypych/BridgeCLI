@@ -117,11 +117,10 @@ def _bg_reader(pid_key: str, proc: subprocess.Popen):
 log_history = collections.deque(maxlen=100)
 tui_lock = threading.Lock()
 
-class StdoutSilencer:
-    def write(self, x): pass
-    def flush(self): pass
-    def isatty(self): return True
-sys.stdout = StdoutSilencer() # Silence prints that break curses
+# Silence prints natively
+import sys, os
+sys.stdout = open(os.devnull, 'w')
+
 
 def get_local_ip():
     try:
@@ -174,10 +173,13 @@ def draw_tui(stdscr, port, auth_enabled):
             auth_color = curses.color_pair(2) if auth_enabled else curses.color_pair(4)
 
             header = f" 🚀 Bridge Agent v4.5 (Pentest Edition) | {tunnel} | Auth: "
-            stdscr.addstr(0, 0, "=" * width, curses.color_pair(5) | curses.A_BOLD)
-            stdscr.addstr(1, 0, header[:width-15], curses.A_BOLD)
-            stdscr.addstr(1, min(len(header), width-10), auth_s, auth_color | curses.A_BOLD)
-            stdscr.addstr(2, 0, "=" * width, curses.color_pair(5) | curses.A_BOLD)
+            try:
+                stdscr.addstr(0, 0, "=" * width, curses.color_pair(5) | curses.A_BOLD)
+                stdscr.addstr(1, 0, header[:width-15], curses.A_BOLD)
+                stdscr.addstr(1, min(len(header), width-10), auth_s, auth_color | curses.A_BOLD)
+                stdscr.addstr(2, 0, "=" * width, curses.color_pair(5) | curses.A_BOLD)
+            except curses.error:
+                pass
 
             # 2. LOGS PANEL (Middle section)
             log_height = height - 12 # Reserve bottom 9 lines for stats/tasks
@@ -195,7 +197,10 @@ def draw_tui(stdscr, port, auth_enabled):
                     elif "EXEC" in safe_log or "POLL" in safe_log: color = curses.color_pair(1)
                     elif "BG" in safe_log or "NUCL" in safe_log or "FFUF" in safe_log or "HTTPX" in safe_log: color = curses.color_pair(3)
 
-                    stdscr.addstr(3 + i, 1, safe_log, color)
+                    try:
+                        stdscr.addstr(3 + i, 1, safe_log, color)
+                    except curses.error:
+                        pass
 
             # 3. BOTTOM PANELS (Stats Left, Tasks Right)
             panel_y = height - 8
@@ -204,28 +209,37 @@ def draw_tui(stdscr, port, auth_enabled):
 
                 # Stats (Left side, 40 chars width)
                 snap = Stats.snapshot()
-                stdscr.addstr(panel_y, 2, "📊 ANALYTICS", curses.color_pair(3) | curses.A_BOLD)
-                stdscr.addstr(panel_y+1, 2, f"Uptime:   {format_duration(snap['uptime_seconds'])}")
-                stdscr.addstr(panel_y+2, 2, f"Requests: {snap['requests']}")
-                stdscr.addstr(panel_y+3, 2, f"Commands: {snap['commands_run']}")
-                stdscr.addstr(panel_y+4, 2, f"Errors:   {snap['errors']}", curses.color_pair(4) if snap['errors'] > 0 else curses.color_pair(0))
-                stdscr.addstr(panel_y+5, 2, f"Data I/O: {format_size(snap['bytes_received'])} IN / {format_size(snap['bytes_sent'])} OUT")
+                try:
+                    stdscr.addstr(panel_y, 2, "ANALYTICS", curses.color_pair(3) | curses.A_BOLD)
+                    stdscr.addstr(panel_y+1, 2, f"Uptime:   {format_duration(snap['uptime_seconds'])}")
+                    stdscr.addstr(panel_y+2, 2, f"Requests: {snap['requests']}")
+                    stdscr.addstr(panel_y+3, 2, f"Commands: {snap['commands_run']}")
+                    stdscr.addstr(panel_y+4, 2, f"Errors:   {snap['errors']}", curses.color_pair(4) if snap['errors'] > 0 else curses.color_pair(0))
+                    stdscr.addstr(panel_y+5, 2, f"Data I/O: {format_size(snap['bytes_received'])} IN / {format_size(snap['bytes_sent'])} OUT")
+                except curses.error:
+                    pass  # Terminal too small
 
                 # Tasks (Right side)
                 mid_x = 45
                 if width > mid_x + 20:
-                    stdscr.addstr(panel_y, mid_x, "⚙️ ACTIVE BACKGROUND TASKS", curses.color_pair(5) | curses.A_BOLD)
+                    try:
+                        stdscr.addstr(panel_y, mid_x, "ACTIVE TASKS", curses.color_pair(5) | curses.A_BOLD)
+                    except curses.error:
+                        pass
 
                     with _bg_lock:
                         active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
 
-                    if not active_tasks:
-                        stdscr.addstr(panel_y+1, mid_x, "No active tasks running.")
-                    else:
-                        for i, (pid, info) in enumerate(active_tasks[-5:]): # Show up to 5
-                            act = info.get("action_type", "bg")[:8]
-                            elap = format_duration(time.time() - info.get("started", time.time()))
-                            stdscr.addstr(panel_y+1+i, mid_x, f"[{pid[:6]}] {act:<8} {elap:>6s}", curses.color_pair(1))
+                    try:
+                        if not active_tasks:
+                            stdscr.addstr(panel_y+1, mid_x, "No active tasks running.")
+                        else:
+                            for i, (pid, info) in enumerate(active_tasks[-5:]): # Show up to 5
+                                act = info.get("action_type", "bg")[:8]
+                                elap = format_duration(time.time() - info.get("started", time.time()))
+                                stdscr.addstr(panel_y+1+i, mid_x, f"[{pid[:6]}] {act:<8} {elap:>6s}", curses.color_pair(1))
+                    except curses.error:
+                        pass  # Terminal too small
 
             # Footer
             stdscr.addstr(height-1, 0, " Press Ctrl+C to Exit ".center(width, "="), curses.color_pair(0) | curses.A_DIM)
@@ -245,8 +259,16 @@ def draw_tui(stdscr, port, auth_enabled):
 def start_tui_thread(port, auth_enabled):
     def wrapper():
         try:
+            # wrapper automatically restores terminal state on crash
             curses.wrapper(draw_tui, port, auth_enabled)
         except KeyboardInterrupt:
+            pass
+        except Exception as e:
+            # If the TUI crashes, we must restore the terminal and print the error to stderr
+            curses.endwin()
+            sys.stderr.write(f"TUI CRASHED: {e}\n")
+        finally:
+            # Tell the main thread to die if the TUI exits
             os.kill(os.getpid(), signal.SIGINT)
 
     t = threading.Thread(target=wrapper, daemon=True)
@@ -1198,8 +1220,13 @@ class ReuseAddrServer(socketserver.TCPServer):
 
 
 def signal_handler(signum, frame):
-    print(f"\n  {Color.WARN}Shutting down bridge...{Color.RESET}\n")
-    sys.exit(0)
+    # Ensure terminal sanity is restored before exiting
+    try:
+        import curses
+        curses.endwin()
+    except Exception:
+        pass
+    os._exit(0)  # Hard exit to bypass broken pipe/socket teardown hangs
 
 
 def main():
