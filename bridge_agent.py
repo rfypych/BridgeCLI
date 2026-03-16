@@ -34,17 +34,8 @@ from io import BytesIO
 from datetime import datetime
 import socket
 import platform
-try:
-    from rich.console import Console
-    from rich.live import Live
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.text import Text
-    from rich.columns import Columns
-    from rich import box
-    RICH_INSTALLED = True
-except ImportError:
-    RICH_INSTALLED = False
+import curses
+import collections
 
 # Force UTF-8 output on Windows
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
@@ -122,85 +113,107 @@ def _bg_reader(pid_key: str, proc: subprocess.Popen):
                 _bg_processes[pid_key]["error"] = str(e)
 
 
-# ==================== MODERN AI CLI DASHBOARD ====================
-console = Console(force_terminal=True, force_interactive=True) if RICH_INSTALLED else None
+# ==================== HTOP-STYLE CURSES DASHBOARD ====================
+log_history = collections.deque(maxlen=50)
 tui_lock = threading.Lock()
+tui_event = threading.Event()
 
-class BridgeCLI:
-    @staticmethod
-    def print_header(port, auth_enabled):
-        if not RICH_INSTALLED: return
-        tunnel = os.environ.get("TUNNEL_URL", f"http://{get_local_ip()}:{port}")
-        auth_s = "[bold #50fa7b]ENABLED[/]" if auth_enabled else "[bold #ff5555]DISABLED[/]"
-
-        header = f"[bold #bd93f9]🚀 Bridge Agent v4.5 (Pentest Edition)[/] | [#8be9fd]{tunnel}[/] | Auth: {auth_s}"
-        console.print(Panel(header, style="#bd93f9", box=box.HEAVY))
-        console.print("[dim italic]Logs will stream below. The status dashboard stays pinned at the bottom.[/]\n")
-
-    @staticmethod
-    def generate_dashboard():
-        snap = Stats.snapshot()
-        up_str = format_duration(snap["uptime_seconds"])
-
-        # Stats Table
-        stats_table = Table(box=box.SIMPLE, show_header=False, expand=True)
-        stats_table.add_column("Key", style="bold #ffb86c")
-        stats_table.add_column("Value", style="#8be9fd")
-        stats_table.add_row("Uptime", up_str)
-        stats_table.add_row("Requests", str(snap["requests"]))
-        stats_table.add_row("Errors", f"[bold #ff5555]{snap['errors']}[/]" if snap['errors'] > 0 else "0")
-        stats_panel = Panel(stats_table, title="[bold #ffb86c]📊 Stats[/]", border_style="#ffb86c", box=box.ROUNDED)
-
-        # Active Tasks Table
-        tasks_table = Table(expand=True, box=box.SIMPLE)
-        tasks_table.add_column("PID", style="bold #8be9fd")
-        tasks_table.add_column("Type", style="bold #ff79c6")
-        tasks_table.add_column("Time", justify="right", style="#f8f8f2")
-
-        with _bg_lock:
-            active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
-
-        for pid, info in active_tasks[-3:]:
-            action_type = info.get("action_type", "bg")
-            elapsed = format_duration(time.time() - info.get("started", time.time()))
-            tasks_table.add_row(pid[:8], action_type.upper(), elapsed)
-
-        if not active_tasks:
-            tasks_table.add_row("-", "Idle", "-")
-
-        tasks_panel = Panel(tasks_table, title="[bold #ff79c6]⚙️ BG Tasks[/]", border_style="#ff79c6", box=box.ROUNDED)
-
-        return Columns([stats_panel, tasks_panel], equal=True, expand=True)
-
-def log_tui(tag, msg, color="#f8f8f2"):
+def log_tui(tag, msg, color_id=0):
     ts_str = ts()
-    if RICH_INSTALLED:
-        with tui_lock:
-            # We use console.print to push the log naturally ABOVE the Live dashboard
-            console.print(f"[#6272a4][{ts_str}][/] [{color}]{tag:<5}[/] {msg}")
-    else:
-        print(f"[{ts_str}] {tag} {msg}")
+    with tui_lock:
+        log_history.append((ts_str, tag, msg, color_id))
+    tui_event.set()
 
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]; s.close(); return ip
-    except Exception:
-        return "127.0.0.1"
+def draw_dashboard(stdscr, port, auth_enabled):
+    curses.curs_set(0)
+    stdscr.nodelay(1)
+    stdscr.timeout(1000)  # Refresh every 1000ms
 
-def format_size(size):
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024: return f"{size:.1f}{unit}" if unit != 'B' else f"{size}B"
-        size /= 1024
-    return f"{size:.1f}TB"
+    # Setup Colors
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)   # OK/READY
+    curses.init_pair(2, curses.COLOR_CYAN, -1)    # GET/READ/POLL
+    curses.init_pair(3, curses.COLOR_MAGENTA, -1) # EXEC/TASKS
+    curses.init_pair(4, curses.COLOR_RED, -1)     # FAIL/ERR
+    curses.init_pair(5, curses.COLOR_YELLOW, -1)  # BG/NUCLEI/HTTPX
 
-def format_duration(s):
-    if s < 1: return f"{s*1000:.0f}ms"
-    if s < 60: return f"{s:.1f}s"
-    return f"{s/60:.1f}m"
+    while True:
+        try:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            if h < 10 or w < 40:
+                stdscr.addstr(0, 0, "Terminal too small!")
+                stdscr.refresh()
+                curses.napms(1000)
+                continue
 
-def ts(): return time.strftime('%H:%M:%S')
+            # --- HEADER (3 Lines) ---
+            tunnel = os.environ.get("TUNNEL_URL", f"http://{get_local_ip()}:{port}")
+            auth_s = "ENABLED" if auth_enabled else "DISABLED"
+
+            header_txt = f" Bridge Agent v4.5 (Pentest Edition) | {tunnel} "
+            stdscr.attron(curses.A_BOLD)
+            stdscr.addstr(0, 0, "=" * w, curses.color_pair(3))
+            stdscr.addstr(1, 0, header_txt[:w-1])
+            if w > len(header_txt) + 15:
+                stdscr.addstr(1, w - 16, f"Auth: {auth_s}", curses.color_pair(1) if auth_enabled else curses.color_pair(4))
+            stdscr.addstr(2, 0, "=" * w, curses.color_pair(3))
+            stdscr.attroff(curses.A_BOLD)
+
+            # --- LOGS PANEL (h-12 lines) ---
+            log_h = h - 12
+            if log_h > 0:
+                with tui_lock:
+                    logs_to_show = list(log_history)[-log_h:]
+
+                for i, (ts_val, tag, msg, cid) in enumerate(logs_to_show):
+                    line = f"[{ts_val}] {tag:<5} {msg}"
+                    safe_line = line[:w-2]
+                    stdscr.addstr(3 + i, 1, safe_line, curses.color_pair(cid))
+
+            # --- BOTTOM DASHBOARD (9 Lines) ---
+            dash_y = h - 9
+            stdscr.addstr(dash_y, 0, "-" * w, curses.A_DIM)
+
+            # Analytics (Left side)
+            snap = Stats.snapshot()
+            stdscr.addstr(dash_y + 1, 2, "ANALYTICS", curses.color_pair(5) | curses.A_BOLD)
+            stdscr.addstr(dash_y + 2, 2, f"Uptime:   {format_duration(snap['uptime_seconds'])}")
+            stdscr.addstr(dash_y + 3, 2, f"Requests: {snap['requests']}")
+            stdscr.addstr(dash_y + 4, 2, f"Commands: {snap['commands_run']}")
+
+            err_color = curses.color_pair(4) if snap['errors'] > 0 else 0
+            stdscr.addstr(dash_y + 5, 2, f"Errors:   {snap['errors']}", err_color)
+            stdscr.addstr(dash_y + 6, 2, f"Data I/O: {format_size(snap['bytes_received'])} IN / {format_size(snap['bytes_sent'])} OUT")
+
+            # Active Tasks (Right side)
+            mid_x = min(w // 2, 45)
+            if w > mid_x + 20:
+                stdscr.addstr(dash_y + 1, mid_x, "ACTIVE BG TASKS", curses.color_pair(3) | curses.A_BOLD)
+                with _bg_lock:
+                    active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
+
+                if not active_tasks:
+                    stdscr.addstr(dash_y + 2, mid_x, "No active tasks.", curses.A_DIM)
+                else:
+                    for i, (pid, info) in enumerate(active_tasks[-5:]):
+                        act = info.get("action_type", "bg")[:8].upper()
+                        elap = format_duration(time.time() - info.get("started", time.time()))
+                        stdscr.addstr(dash_y + 2 + i, mid_x, f"[{pid[:6]}] {act:<8} {elap:>6s}", curses.color_pair(2))
+
+            # --- FOOTER ---
+            stdscr.addstr(h - 1, 0, " Press Ctrl+C to Stop ".center(w, "="), curses.color_pair(0) | curses.A_DIM)
+
+            stdscr.refresh()
+
+            # Wait for keyboard input or next 1-second timeout
+            c = stdscr.getch()
+            if c == 3 or c == 113 or c == 27:  # Ctrl+C, 'q', ESC
+                break
+
+        except curses.error:
+            pass # Terminal is probably too small, just ignore and retry next frame
 
 def detect_shells():
 
@@ -1183,47 +1196,33 @@ def main():
     port = args.port
     auth_enabled = API_KEY is not None
 
-    if RICH_INSTALLED:
-        BridgeCLI.print_header(port, auth_enabled)
+    try:
+        server = ReuseAddrServer(("", port), BridgeHandler)
+    except OSError as e:
+        if "Address already in use" in str(e) or "10048" in str(e):
+            sys.stderr.write(f"\nFATAL: Port {port} is already in use! Please use another port.\n")
+            sys.exit(1)
+        else:
+            raise
 
-        try:
-            server = ReuseAddrServer(("", port), BridgeHandler)
-        except OSError as e:
-            if "Address already in use" in str(e) or "10048" in str(e):
-                console.print(f"\n[bold #ff5555]FATAL: Port {port} is already in use! Please use another port.[/]")
-                sys.exit(1)
-            else:
-                raise
+    # Silence prints so they don't break curses window buffer
+    # But keep stderr alive just in case of hard crashes
+    sys.stdout = open(os.devnull, 'w')
 
-        log_tui("READY", f"Listening on port {port}...", "bold #50fa7b")
+    # Start the HTTP Server silently in a background daemon thread
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
 
-        # Start the HTTP Server in a background thread so it doesn't block the Live UI
-        http_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        http_thread.start()
+    log_tui("READY", f"Listening on port {port}...", 1)
 
-        # The Live dashboard stays pinned at the bottom of the screen (screen=False)
-        try:
-            with Live(BridgeCLI.generate_dashboard(), refresh_per_second=1, screen=False, transient=False) as live:
-                while True:
-                    time.sleep(1)
-                    live.update(BridgeCLI.generate_dashboard())
-        except KeyboardInterrupt:
-            pass
-
-    else:
-        # Fallback to plain text if rich is not installed
-        try:
-            server = ReuseAddrServer(("", port), BridgeHandler)
-            print(f"READY: Listening on port {port}...")
-            server.serve_forever()
-        except OSError as e:
-            if "Address already in use" in str(e) or "10048" in str(e):
-                print(f"FATAL: Port {port} is already in use!")
-                sys.exit(1)
-            else:
-                raise
-        except KeyboardInterrupt:
-            print("Stopped.")
+    try:
+        # Curses TAKES OVER the main thread entirely, ensuring 100% stable TTY control like htop
+        curses.wrapper(draw_dashboard, port, auth_enabled)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # This is CRITICAL. Once curses.wrapper exits, we must cleanly tear down the background daemon!
+        os._exit(0)
 
 if __name__ == "__main__":
     main()

@@ -130,19 +130,19 @@ def start_bridge(port, api_key, no_color, log_file):
     if log_file:
         cmd += ["--log", log_file]
 
+    # Using subprocess.run blocks the launcher and hands 100% of TTY over to the curses app
     import os
     env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
 
     log("START", f"bridge_agent.py (port {port})", B)
-    # By passing None, the child inherits the parent's TTY directly, fixing the rich.Live ANSI escape codes
-    proc = subprocess.Popen(cmd, stdout=None, stderr=None, env=env)
-    _procs.append(proc)
-    time.sleep(1.5)
-    if proc.poll() is not None:
-        log("ERROR", "bridge_agent.py exited unexpectedly!", R)
-        sys.exit(1)
-    return proc
+    try:
+        subprocess.run(cmd, env=env, check=False)
+    except KeyboardInterrupt:
+        pass
+
+    # Once bridge_agent exits (via curses quit), we kill everything else too
+    cleanup()
+    return None
 
 # ==================== CLOUDFLARED ====================
 def start_cloudflared(cf_path, port, protocol):
@@ -275,15 +275,12 @@ def main():
     # --- Start bridge TUI ---
     bridge_proc = start_bridge(actual_port, args.api_key, args.no_color, args.log)
 
-    # --- Monitor ---
-    monitor_thread = threading.Thread(target=monitor_processes, args=(bridge_proc, cf_proc), daemon=True)
-    monitor_thread.start()
-
-    # Keep alive
-    try:
-        bridge_proc.wait()
-    except KeyboardInterrupt:
-        cleanup()
+    # Monitor cloudflared only (bridge_proc handles its own blocking execution)
+    if cf_proc:
+        def monitor_cf():
+            cf_proc.wait()
+            log("WARN", "cloudflared exited.", Y)
+        threading.Thread(target=monitor_cf, daemon=True).start()
 
 
 if __name__ == "__main__":
