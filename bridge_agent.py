@@ -120,6 +120,7 @@ tui_lock = threading.Lock()
 class StdoutSilencer:
     def write(self, x): pass
     def flush(self): pass
+    def isatty(self): return True
 sys.stdout = StdoutSilencer() # Silence prints that break curses
 
 def get_local_ip():
@@ -1210,9 +1211,6 @@ def main():
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + home_go_bin
 
 
-    if not sys.stdout.isatty():
-        Color.disable()
-
     parser = argparse.ArgumentParser(description="Bridge Agent v4.5 (Pentest Edition) - Remote Terminal Bridge")
     parser.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
     parser.add_argument("--api-key", "-k", type=str, default=None)
@@ -1220,8 +1218,7 @@ def main():
     parser.add_argument("--no-color", action="store_true")
     args = parser.parse_args()
 
-    if args.no_color:
-        Color.disable()
+
 
     API_KEY = args.api_key or os.environ.get("BRIDGE_API_KEY")
     LOG_FILE = args.log or os.environ.get("BRIDGE_LOG_FILE")
