@@ -125,7 +125,10 @@ def log_tui(tag, msg, color_id=0):
     tui_event.set()
 
 def draw_dashboard(stdscr, port, auth_enabled):
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0) # Hide cursor if supported
+    except curses.error:
+        pass
     stdscr.nodelay(1)
     stdscr.timeout(1000)  # Refresh every 1000ms
 
