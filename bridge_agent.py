@@ -40,10 +40,11 @@ try:
     from rich.live import Live
     from rich.table import Table
     from rich.panel import Panel
+    from rich.layout import Layout
     from rich.text import Text
     from rich import box
     from rich.console import Console
-    from rich.columns import Columns
+    from rich.align import Align
     RICH_INSTALLED = True
 except ImportError:
     RICH_INSTALLED = False
@@ -159,69 +160,98 @@ class Color:
 
 # ==================== HELPERS ====================
 
-# ==================== MODERN CLI DASHBOARD ====================
+# ==================== HTOP-STYLE TUI DASHBOARD ====================
 console = Console() if RICH_INSTALLED else None
+log_history = collections.deque(maxlen=35)  # Keep last 35 logs for the scrolling view
 tui_lock = threading.Lock()
+update_event = threading.Event() # Only refresh when needed to avoid blinking
 
 class BridgeTUI:
     @staticmethod
-    def print_header(port, auth_enabled):
-        if not RICH_INSTALLED: return
-
-        tunnel = os.environ.get("TUNNEL_URL", f"http://{get_local_ip()}:{port}")
-        auth_s = "[bold #50fa7b]ENABLED[/]" if auth_enabled else "[bold #ff5555]DISABLED[/]"
-
-        header = f"[bold #bd93f9]🚀 Bridge Agent v4.5 (Pentest Edition)[/] | [#8be9fd]{tunnel}[/] | Auth: {auth_s}"
-        console.print(Panel(header, style="#bd93f9", box=box.HEAVY))
-        console.print("[dim italic]Logs will stream below. The status dashboard stays at the bottom.[/]\n")
+    def generate_layout(port, auth_enabled):
+        layout = Layout()
+        layout.split(
+            Layout(name="header", size=3),
+            Layout(name="main"),
+            Layout(name="footer", size=3)
+        )
+        layout["main"].split_row(
+            Layout(name="logs", ratio=3),
+            Layout(name="sidebar", ratio=1)
+        )
+        layout["sidebar"].split_column(
+            Layout(name="stats", size=9),
+            Layout(name="tasks")
+        )
+        return BridgeTUI.update_layout(layout, port, auth_enabled)
 
     @staticmethod
-    def generate_dashboard():
-        # Creates a side-by-side or stacked view for the bottom of the terminal
-        snap = Stats.snapshot()
-        up_str = format_duration(snap["uptime_seconds"])
+    def update_layout(layout, port, auth_enabled):
+        with tui_lock:
+            # Header
+            ip = get_local_ip()
+            tunnel = os.environ.get("TUNNEL_URL", f"http://{ip}:{port}")
+            auth_s = "[bold #50fa7b]ENABLED[/]" if auth_enabled else "[bold #ff5555]DISABLED[/]"
+            header_text = Text.from_markup(f"[bold #bd93f9]🚀 Bridge Agent v4.5 (Pentest Edition)[/] | [#8be9fd]{tunnel}[/] | Auth: {auth_s}")
+            layout["header"].update(Panel(Align.center(header_text, vertical="middle"), border_style="#bd93f9", box=box.HEAVY))
 
-        # 1. Stats Table
-        stats_table = Table(box=box.SIMPLE, show_header=False, expand=True)
-        stats_table.add_column("Key", style="bold #ffb86c")
-        stats_table.add_column("Value", style="#8be9fd")
-        stats_table.add_row("Uptime", up_str)
-        stats_table.add_row("Requests", str(snap["requests"]))
-        stats_table.add_row("Errors", f"[bold #ff5555]{snap['errors']}[/]" if snap['errors'] > 0 else "0")
-        stats_panel = Panel(stats_table, title="[bold #ffb86c]📊 Stats[/]", border_style="#ffb86c", box=box.ROUNDED)
+            # Logs (Using a Text object that joins deque)
+            log_text = Text()
+            for entry in list(log_history):
+                log_text.append(Text.from_markup(entry + "\n"))
+            layout["logs"].update(Panel(log_text, title="[bold #50fa7b]📡 Live AI Activity Logs[/]", border_style="#50fa7b", box=box.ROUNDED))
 
-        # 2. Active Tasks Table
-        tasks_table = Table(expand=True, box=box.SIMPLE)
-        tasks_table.add_column("PID", style="bold #8be9fd")
-        tasks_table.add_column("Type", style="bold #ff79c6")
-        tasks_table.add_column("Time", justify="right", style="#f8f8f2")
+            # Stats
+            snap = Stats.snapshot()
+            up_str = format_duration(snap["uptime_seconds"])
+            stats_table = Table(box=box.SIMPLE, show_header=False, expand=True)
+            stats_table.add_column("Key", style="bold #ffb86c")
+            stats_table.add_column("Value", style="#8be9fd", justify="right")
+            stats_table.add_row("Uptime", up_str)
+            stats_table.add_row("Requests", str(snap["requests"]))
+            stats_table.add_row("Commands", str(snap["commands_run"]))
+            stats_table.add_row("Errors", f"[bold #ff5555]{snap['errors']}[/]" if snap['errors'] > 0 else "0")
+            stats_table.add_row("Bytes Sent", format_size(snap["bytes_sent"]))
+            stats_table.add_row("Bytes Recv", format_size(snap["bytes_received"]))
+            layout["stats"].update(Panel(stats_table, title="[bold #ffb86c]📊 Analytics[/]", border_style="#ffb86c", box=box.ROUNDED))
 
-        with _bg_lock:
-            active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
+            # Active Tasks
+            tasks_table = Table(expand=True, box=box.SIMPLE)
+            tasks_table.add_column("PID", style="bold #8be9fd")
+            tasks_table.add_column("Type", style="bold #ff79c6")
+            tasks_table.add_column("Time", justify="right", style="#f8f8f2")
 
-        for pid, info in active_tasks[-3:]: # Show only last 3 to keep dashboard small
-            action_type = info.get("action_type", "bg")
-            elapsed = format_duration(time.time() - info.get("started", time.time()))
-            tasks_table.add_row(pid[:8], action_type.upper(), elapsed)
+            with _bg_lock:
+                active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
 
-        if not active_tasks:
-            tasks_table.add_row("-", "Idle", "-")
+            for pid, info in active_tasks[-15:]:
+                action_type = info.get("action_type", "bg")
+                elapsed = format_duration(time.time() - info.get("started", time.time()))
+                tasks_table.add_row(pid[:8], action_type.upper()[:10], elapsed)
 
-        tasks_panel = Panel(tasks_table, title="[bold #ff79c6]⚙️ BG Tasks[/]", border_style="#ff79c6", box=box.ROUNDED)
+            if not active_tasks:
+                tasks_table.add_row("-", "Idle", "-")
 
-        # 3. Combine Side-by-Side
-        return Columns([stats_panel, tasks_panel], equal=True, expand=True)
+            layout["tasks"].update(Panel(tasks_table, title="[bold #ff79c6]⚙️ Active Tasks[/]", border_style="#ff79c6", box=box.ROUNDED))
+
+            # Footer
+            footer_text = Text("Press Ctrl+C to Stop • Terminal selection/copying might require holding Shift depending on your terminal.", justify="center", style="#6272a4")
+            layout["footer"].update(Panel(footer_text, style="#6272a4", box=box.ROUNDED))
+
+            return layout
 
 def log_tui(tag, msg, color="#f8f8f2"):
     ts_str = ts()
     if RICH_INSTALLED:
         with tui_lock:
-            console.print(f"[#6272a4][{ts_str}][/] [{color}]{tag:<5}[/] {msg}")
+            # We don't print to console, we just append to the layout's history deque
+            log_history.append(f"[#6272a4][{ts_str}][/] [{color}]{tag:<5}[/] {msg}")
+        update_event.set() # Trigger a screen refresh
     else:
         print(f"[{ts_str}] {tag} {msg}")
 
 def legacy_print(*args, **kwargs):
-    pass # Still silence old prints
+    pass # Silence normal prints to prevent layout tearing
   # We silence normal prints because they break the TUI
 
 def get_local_ip():
@@ -1212,34 +1242,34 @@ def main():
     auth_enabled = API_KEY is not None
 
     if RICH_INSTALLED:
-        BridgeTUI.print_header(port, auth_enabled)
         try:
             server = ReuseAddrServer(("", port), BridgeHandler)
         except OSError as e:
             if "Address already in use" in str(e) or "10048" in str(e):
-                console.print(f"[bold red]FATAL:[/] Port {port} is already in use! Please use another port.")
+                print(f"FATAL: Port {port} is already in use! Please use another port.")
                 sys.exit(1)
             else:
                 raise
 
         log_tui("READY", f"Listening on port {port}...", "bold #50fa7b")
 
-        # Live dashboard at the bottom, auto-refreshing without taking over the screen
-        def tui_loop():
-            # transient=False keeps the final dashboard visible on exit
-            # screen=False prevents alternate screen, letting logs scroll up normally
-            with Live(BridgeTUI.generate_dashboard(), refresh_per_second=2, screen=False, transient=True) as live:
+        def tui_loop(layout, p, auth):
+            # We use screen=True for htop-style fullscreen mode.
+            # We use refresh_per_second=4, but we only generate layout heavily when updated or 1x per second
+            with Live(layout, refresh_per_second=4, screen=True, transient=False) as live:
                 while True:
-                    time.sleep(0.5)
-                    live.update(BridgeTUI.generate_dashboard())
+                    # Update screen if new logs arrived or every 1 second (to update task timers)
+                    if update_event.wait(timeout=1.0):
+                        update_event.clear()
+                    live.update(BridgeTUI.update_layout(layout, p, auth))
 
-        tui_thread = threading.Thread(target=tui_loop, daemon=True)
+        layout = BridgeTUI.generate_layout(port, auth_enabled)
+        tui_thread = threading.Thread(target=tui_loop, args=(layout, port, auth_enabled), daemon=True)
         tui_thread.start()
 
         try:
             server.serve_forever()
         except KeyboardInterrupt:
-            console.print("\n[bold #ff5555]Stopped.[/]")
             pass
     else:
         print_banner(args.port, auth_enabled)
