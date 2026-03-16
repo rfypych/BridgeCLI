@@ -130,8 +130,13 @@ def start_bridge(port, api_key, no_color, log_file):
     if log_file:
         cmd += ["--log", log_file]
 
+    import os
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+
     log("START", f"bridge_agent.py (port {port})", B)
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr)
+    # By passing None, the child inherits the parent's TTY directly, fixing the rich.Live ANSI escape codes
+    proc = subprocess.Popen(cmd, stdout=None, stderr=None, env=env)
     _procs.append(proc)
     time.sleep(1.5)
     if proc.poll() is not None:

@@ -123,7 +123,7 @@ def _bg_reader(pid_key: str, proc: subprocess.Popen):
 
 
 # ==================== MODERN AI CLI DASHBOARD ====================
-console = Console() if RICH_INSTALLED else None
+console = Console(force_terminal=True, force_interactive=True) if RICH_INSTALLED else None
 tui_lock = threading.Lock()
 
 class BridgeCLI:
@@ -1203,9 +1203,9 @@ def main():
 
         # The Live dashboard stays pinned at the bottom of the screen (screen=False)
         try:
-            with Live(BridgeCLI.generate_dashboard(), refresh_per_second=2, screen=False, transient=False) as live:
+            with Live(BridgeCLI.generate_dashboard(), refresh_per_second=1, screen=False, transient=False) as live:
                 while True:
-                    time.sleep(0.5)
+                    time.sleep(1)
                     live.update(BridgeCLI.generate_dashboard())
         except KeyboardInterrupt:
             pass
