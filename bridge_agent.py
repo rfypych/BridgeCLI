@@ -191,57 +191,57 @@ class BridgeTUI:
             ip = get_local_ip()
             auth_s = "[bold green]ENABLED[/bold green]" if auth_enabled else "[bold red]DISABLED[/bold red]"
             tunnel = os.environ.get("TUNNEL_URL", f"http://{ip}:{port}")
-            header_text = Text(f"🚀 Bridge Agent v4.5 (Pentest Edition) | {tunnel} | Auth: ", style="bold cyan")
-            header_text.append(Text.from_markup(auth_s))
-            layout["header"].update(Panel(Align.center(header_text, vertical="middle"), style="blue", box=box.ROUNDED))
+            auth_s = "[bold #50fa7b]ENABLED[/]" if auth_enabled else "[bold #ff5555]DISABLED[/]"
+            header_text = Text.from_markup(f"[bold #bd93f9]🚀 Bridge Agent v4.5 (Pentest Edition)[/] | [#8be9fd]{tunnel}[/] | Auth: {auth_s}")
+            layout["header"].update(Panel(Align.center(header_text, vertical="middle"), border_style="#bd93f9", box=box.HEAVY))
 
             # Logs
             log_text = Text()
             for entry in list(log_history):
                 log_text.append(entry + "\n")
-            layout["logs"].update(Panel(log_text, title="[bold green]📡 Live AI Activity Logs[/bold green]", border_style="green", box=box.ROUNDED))
+            layout["logs"].update(Panel(log_text, title="[bold #50fa7b]📡 Live AI Activity Logs[/]", border_style="#50fa7b", box=box.ROUNDED))
 
             # Stats
             snap = Stats.snapshot()
             up_str = format_duration(snap["uptime_seconds"])
             stats_table = Table(box=box.SIMPLE, show_header=False)
-            stats_table.add_column("Key", style="bold yellow")
-            stats_table.add_column("Value", style="cyan")
+            stats_table.add_column("Key", style="bold #ffb86c")
+            stats_table.add_column("Value", style="#8be9fd")
             stats_table.add_row("Uptime", up_str)
             stats_table.add_row("Requests", str(snap["requests"]))
             stats_table.add_row("Commands", str(snap["commands_run"]))
-            stats_table.add_row("Errors", f"[bold red]{snap['errors']}[/bold red]" if snap['errors'] > 0 else "0")
+            stats_table.add_row("Errors", f"[bold #ff5555]{snap['errors']}[/]" if snap['errors'] > 0 else "0")
             stats_table.add_row("Bytes Sent", format_size(snap["bytes_sent"]))
             stats_table.add_row("Bytes Recv", format_size(snap["bytes_received"]))
-            layout["stats"].update(Panel(stats_table, title="[bold yellow]📊 Analytics[/bold yellow]", border_style="yellow", box=box.ROUNDED))
+            layout["stats"].update(Panel(stats_table, title="[bold #ffb86c]📊 Analytics[/]", border_style="#ffb86c", box=box.ROUNDED))
 
             # Active Tasks
             tasks_table = Table(expand=True, box=box.SIMPLE)
-            tasks_table.add_column("PID", style="bold cyan")
-            tasks_table.add_column("Type", style="bold magenta")
-            tasks_table.add_column("Time", justify="right")
+            tasks_table.add_column("PID", style="bold #8be9fd")
+            tasks_table.add_column("Type", style="bold #ff79c6")
+            tasks_table.add_column("Time", justify="right", style="#f8f8f2")
 
             with _bg_lock:
                 active_tasks = [p for p in _bg_processes.items() if not p[1].get("done")]
 
-            for pid, info in active_tasks[-10:]: # Show last 10 active tasks
+            for pid, info in active_tasks[-10:]:
                 action_type = info.get("action_type", "bg")
                 elapsed = format_duration(time.time() - info.get("started", time.time()))
                 tasks_table.add_row(pid[:8], action_type.upper(), elapsed)
 
-            layout["tasks"].update(Panel(tasks_table, title="[bold magenta]⚙️ Active BG Tasks[/bold magenta]", border_style="magenta", box=box.ROUNDED))
+            layout["tasks"].update(Panel(tasks_table, title="[bold #ff79c6]⚙️ Active Tasks[/]", border_style="#ff79c6", box=box.ROUNDED))
 
             # Footer
-            footer_text = Text("Press Ctrl+C to Stop • Waiting for AI payloads...", justify="center", style="dim white")
-            layout["footer"].update(Panel(footer_text, style="dim", box=box.ROUNDED))
+            footer_text = Text("Press Ctrl+C to Stop • Waiting for AI payloads...", justify="center", style="#6272a4")
+            layout["footer"].update(Panel(footer_text, style="#6272a4", box=box.ROUNDED))
 
             return layout
 
-def log_tui(tag, msg, color="white"):
+def log_tui(tag, msg, color="#f8f8f2"):
     ts_str = ts()
     if RICH_INSTALLED:
         with tui_lock:
-            log_history.append(f"[dim][{ts_str}][/dim] [bold {color}]{tag:<5}[/bold {color}] {msg}")
+            log_history.append(f"[#6272a4][{ts_str}][/] [{color}]{tag:<5}[/] {msg}")
     else:
         # Fallback to standard print if rich is not installed
         print(f"[{ts_str}] {tag} {msg}")
@@ -1250,7 +1250,7 @@ def main():
         log_tui("READY", f"Listening on port {port}...", "green")
 
         def tui_loop(layout, p, auth):
-            with Live(layout, refresh_per_second=4, screen=True) as live:
+            with Live(layout, refresh_per_second=1.5, screen=True, transient=True) as live:
                 while True:
                     time.sleep(0.25)
                     live.update(BridgeTUI.update_layout(layout, p, auth))
