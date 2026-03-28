@@ -1,0 +1,11 @@
+# Dirsearch started Sat Mar 14 07:10:42 2026 as: /usr/lib/python3/dist-packages/dirsearch/dirsearch.py -u https://api.vault.chiatest.net/ -e json,html,js,txt -t 20 --timeout 5 -q
+
+404     0B   https://api.vault.chiatest.net/graphql/console
+200    89B   https://api.vault.chiatest.net/graphql/graphql
+404     0B   https://api.vault.chiatest.net/graphql/schema.json
+404     0B   https://api.vault.chiatest.net/graphql/console/
+404     0B   https://api.vault.chiatest.net/graphql/schema.xml
+200    89B   https://api.vault.chiatest.net/graphql
+404     0B   https://api.vault.chiatest.net/graphql/schema.yaml
+200    89B   https://api.vault.chiatest.net/graphql/
+200    20B   https://api.vault.chiatest.net/healthz
